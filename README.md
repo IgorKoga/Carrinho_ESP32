@@ -77,3 +77,4 @@ Você pode abrir a interface web de duas formas:
    - Aumente o $K_p$ para dar mais resposta nas curvas. Se o carrinho começar a oscilar excessivamente de um lado para o outro ("ziguezague"), reduza o $K_p$.
 3. **Ganho Derivativo ($K_d$)**:
    - Aumente o $K_d$ para amortecer as oscilações e suavizar a trajetória em retas.
+# Carrinho_ESP32
