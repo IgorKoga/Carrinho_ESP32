@@ -39,12 +39,14 @@ document.addEventListener('DOMContentLoaded', () => {
   const lblKi = document.getElementById('lblKi');
   const rngKd = document.getElementById('rngKd');
   const lblKd = document.getElementById('lblKd');
+  const rngServoTest = document.getElementById('rngServoTest');
+  const lblServoTest = document.getElementById('lblServoTest');
   const btnSaveSettings = document.getElementById('btnSaveSettings');
 
-  const barMotorLeft = document.getElementById('barMotorLeft');
-  const valMotorLeft = document.getElementById('valMotorLeft');
-  const barMotorRight = document.getElementById('barMotorRight');
-  const valMotorRight = document.getElementById('valMotorRight');
+  const barDriveSpeed = document.getElementById('barDriveSpeed');
+  const valDriveSpeed = document.getElementById('valDriveSpeed');
+  const barServoAngle = document.getElementById('barServoAngle');
+  const valServoAngle = document.getElementById('valServoAngle');
 
   const errorCanvas = document.getElementById('errorChart');
   const ctxError = errorCanvas.getContext('2d');
@@ -145,13 +147,16 @@ document.addEventListener('DOMContentLoaded', () => {
       lineDetectState.style.color = 'var(--accent-red)';
     }
 
-    // Motores
-    const leftPwm = data.leftSpeed || 0;
-    const rightPwm = data.rightSpeed || 0;
-    valMotorLeft.textContent = `${leftPwm} PWM`;
-    valMotorRight.textContent = `${rightPwm} PWM`;
-    barMotorLeft.style.width = `${Math.min(100, Math.abs(leftPwm) / 2.55)}%`;
-    barMotorRight.style.width = `${Math.min(100, Math.abs(rightPwm) / 2.55)}%`;
+    // Actuadores: Tração e Servomotor
+    const drivePwm = data.driveSpeed !== undefined ? data.driveSpeed : (data.leftSpeed || 0);
+    const angle = data.servoAngle !== undefined ? data.servoAngle : 90;
+
+    valDriveSpeed.textContent = `${drivePwm} PWM`;
+    barDriveSpeed.style.width = `${Math.min(100, Math.abs(drivePwm) / 2.55)}%`;
+
+    valServoAngle.textContent = `${angle}°`;
+    // Mapeia de 0-180° para 0-100% da barra visual
+    barServoAngle.style.width = `${Math.min(100, Math.max(0, (angle / 180) * 100))}%`;
 
     // Desenhar Visão e Gráfico
     drawOverlay(data.linePos || targetCenter, data.error || 0, data.lineDetected, camW, camH);
@@ -339,6 +344,11 @@ document.addEventListener('DOMContentLoaded', () => {
   rngKp.addEventListener('input', () => lblKp.textContent = parseFloat(rngKp.value).toFixed(2));
   rngKi.addEventListener('input', () => lblKi.textContent = parseFloat(rngKi.value).toFixed(2));
   rngKd.addEventListener('input', () => lblKd.textContent = parseFloat(rngKd.value).toFixed(2));
+
+  rngServoTest.addEventListener('input', () => {
+    lblServoTest.textContent = `${rngServoTest.value}°`;
+    fetch(`http://${espIp}/api/servo?angle=${rngServoTest.value}`).catch(() => {});
+  });
 
   btnSaveSettings.addEventListener('click', () => {
     const params = new URLSearchParams({

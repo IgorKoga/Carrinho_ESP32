@@ -57,21 +57,28 @@ const char* password = "password123";
 #define FLASH_GPIO_NUM     4
 
 // ==========================================
-// CONFIGURAÇÃO DOS PINOS DA PONTE H (L298N)
+// CONFIGURAÇÃO DOS PINOS DA PONTE H & SERVO (Fiação Real)
 // ==========================================
-#define MOTOR_LEFT_IN1   12
-#define MOTOR_LEFT_IN2   13
-#define MOTOR_RIGHT_IN3  14
-#define MOTOR_RIGHT_IN4  15
+#define MOTOR_IN1   14 // IO14 -> IN1
+#define MOTOR_IN2   15 // IO15 -> IN2
+#define MOTOR_IN3   13 // IO13 -> IN3
+#define MOTOR_IN4   12 // IO12 -> IN4
+
+// Pino de Sinal do Servomotor de Direção
+#define SERVO_PIN   2
 
 // Canais PWM LEDC do ESP32
-#define PWM_CHAN_IN1  0
-#define PWM_CHAN_IN2  1
-#define PWM_CHAN_IN3  2
-#define PWM_CHAN_IN4  3
+#define PWM_CHAN_IN1    0
+#define PWM_CHAN_IN2    1
+#define PWM_CHAN_IN3    2
+#define PWM_CHAN_IN4    3
+#define PWM_CHAN_SERVO  4
 
-#define PWM_FREQ      5000
-#define PWM_RES       8 // Resolution 0-255
+#define PWM_FREQ        5000
+#define PWM_RES         8 // Resolution 0-255
+
+#define SERVO_FREQ      50   // Frequência padrão de Servo (50Hz)
+#define SERVO_RES       14   // Resolução 14 bits (0-16383) para controle suave
 
 // Compatibilidade entre ESP32 Arduino Core 2.x e 3.x (LEDC API)
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
@@ -83,20 +90,27 @@ const char* password = "password123";
 #endif
 
 // ==========================================
-// VARIÁVEIS DE CONTROLE E PID
+// VARIÁVEIS DE CONTROLE, SERVO E PID
 // ==========================================
 enum Mode { MODE_MANUAL, MODE_AUTO };
 Mode currentMode = MODE_AUTO;
 
-// Parâmetros de Velocidade (0 - 255)
+// Parâmetros de Velocidade de Tração (0 - 255)
 int baseSpeed = 160;
-int maxSpeed  = 230;
+int maxSpeed  = 255;
 int minSpeed  = 0;
+int currentDriveSpeed = 0;
 
-// Parâmetros PID para o Seguidor de Linha
-float Kp = 1.25;
+// Parâmetros do Servomotor de Direção (Ângulos em Graus)
+int currentServoAngle = 90;
+int servoCenterAngle  = 90;  // Posição central / reto (90°)
+int servoMinAngle     = 45;  // Limite máximo de curva à esquerda (graus)
+int servoMaxAngle     = 135; // Limite máximo de curva à direita (graus)
+
+// Parâmetros PID para o Seguidor de Linha (Ajusta o Ângulo do Servo)
+float Kp = 0.50;
 float Ki = 0.00;
-float Kd = 0.45;
+float Kd = 0.20;
 
 float errorPrev = 0;
 float integral  = 0;
@@ -113,8 +127,6 @@ int lastError     = 0;
 float fps = 0.0;
 unsigned long frameCount = 0;
 unsigned long lastFpsTime = 0;
-int motorLeftSpeed = 0;
-int motorRightSpeed = 0;
 
 // Servidores HTTP
 WebServer server(80);
@@ -123,7 +135,9 @@ WiFiServer streamServer(81);
 // Forward declarations
 void startCamera();
 void setupMotors();
-void setMotorSpeeds(int leftSpeed, int rightSpeed);
+void setupServo();
+void setServoAngle(int angle);
+void setDriveSpeed(int speed);
 void processLineFollowing(uint8_t* buf, int width, int height);
 void handleStream();
 
@@ -139,6 +153,7 @@ void setup() {
   digitalWrite(FLASH_GPIO_NUM, LOW); // Flash desligado
 
   setupMotors();
+  setupServo();
   startCamera();
 
   // Conexão Wi-Fi
@@ -160,7 +175,7 @@ void setup() {
 
   // Rotas HTTP da API REST
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/html", "<h1>ESP32-CAM Carrinho Seguidor de Linha Ativo!</h1><p>Acesse o servidor web frontend para controlar.</p>");
+    server.send(200, "text/html", "<h1>ESP32-CAM Carrinho com Servomotor Ativo!</h1><p>Acesse o servidor web frontend para controlar.</p>");
   });
 
   // Alterar Modo (AUTO / MANUAL)
@@ -170,7 +185,8 @@ void setup() {
       if (m == "AUTO") currentMode = MODE_AUTO;
       else if (m == "MANUAL") {
         currentMode = MODE_MANUAL;
-        setMotorSpeeds(0, 0);
+        setDriveSpeed(0);
+        setServoAngle(servoCenterAngle);
       }
     }
     server.send(200, "application/json", "{\"mode\":\"" + String(currentMode == MODE_AUTO ? "AUTO" : "MANUAL") + "\"}");
@@ -183,16 +199,35 @@ void setup() {
       int spd = baseSpeed;
       if (server.hasArg("speed")) spd = server.arg("speed").toInt();
 
-      if (dir == "FORWARD")       setMotorSpeeds(spd, spd);
-      else if (dir == "BACKWARD") setMotorSpeeds(-spd, -spd);
-      else if (dir == "LEFT")     setMotorSpeeds(-spd, spd);
-      else if (dir == "RIGHT")    setMotorSpeeds(spd, -spd);
-      else                        setMotorSpeeds(0, 0);
+      if (dir == "FORWARD") {
+        setDriveSpeed(spd);
+        setServoAngle(servoCenterAngle);
+      } else if (dir == "BACKWARD") {
+        setDriveSpeed(-spd);
+        setServoAngle(servoCenterAngle);
+      } else if (dir == "LEFT") {
+        setDriveSpeed(spd);
+        setServoAngle(servoMinAngle);
+      } else if (dir == "RIGHT") {
+        setDriveSpeed(spd);
+        setServoAngle(servoMaxAngle);
+      } else {
+        setDriveSpeed(0);
+      }
     }
     server.send(200, "application/json", "{\"status\":\"ok\"}");
   });
 
-  // Configuração dos Parâmetros PID e Threshold
+  // Endpoint direto para controlar o Ângulo do Servomotor (ex: /api/servo?angle=90)
+  server.on("/api/servo", HTTP_GET, []() {
+    if (server.hasArg("angle")) {
+      int angle = server.arg("angle").toInt();
+      setServoAngle(angle);
+    }
+    server.send(200, "application/json", "{\"servoAngle\":" + String(currentServoAngle) + "}");
+  });
+
+  // Configuração dos Parâmetros PID, Threshold e Limites do Servo
   server.on("/api/settings", HTTP_GET, []() {
     if (server.hasArg("kp")) Kp = server.arg("kp").toFloat();
     if (server.hasArg("ki")) Ki = server.arg("ki").toFloat();
@@ -200,6 +235,9 @@ void setup() {
     if (server.hasArg("speed")) baseSpeed = server.arg("speed").toInt();
     if (server.hasArg("thresh")) thresholdVal = server.arg("thresh").toInt();
     if (server.hasArg("dark")) isDarkLine = (server.arg("dark") == "true" || server.arg("dark") == "1");
+    if (server.hasArg("servoCenter")) servoCenterAngle = server.arg("servoCenter").toInt();
+    if (server.hasArg("servoMin")) servoMinAngle = server.arg("servoMin").toInt();
+    if (server.hasArg("servoMax")) servoMaxAngle = server.arg("servoMax").toInt();
 
     server.send(200, "application/json", "{\"status\":\"updated\"}");
   });
@@ -214,8 +252,11 @@ void setup() {
     json += "\"camWidth\":160,";
     json += "\"camHeight\":120,";
     json += "\"lineDetected\":" + String(lineDetected ? "true" : "false") + ",";
-    json += "\"leftSpeed\":" + String(motorLeftSpeed) + ",";
-    json += "\"rightSpeed\":" + String(motorRightSpeed) + ",";
+    json += "\"driveSpeed\":" + String(currentDriveSpeed) + ",";
+    json += "\"servoAngle\":" + String(currentServoAngle) + ",";
+    json += "\"servoCenter\":" + String(servoCenterAngle) + ",";
+    json += "\"servoMin\":" + String(servoMinAngle) + ",";
+    json += "\"servoMax\":" + String(servoMaxAngle) + ",";
     json += "\"kp\":" + String(Kp, 2) + ",";
     json += "\"ki\":" + String(Ki, 2) + ",";
     json += "\"kd\":" + String(Kd, 2) + ",";
@@ -240,44 +281,56 @@ void loop() {
 }
 
 // ==========================================
-// CONFIGURAÇÃO DOS MOTORES (L298N)
+// CONFIGURAÇÃO DOS MOTORES E SERVO
 // ==========================================
 void setupMotors() {
-  // Configuração dos canais/pinos PWM LEDC para controle refinado da ponte H L298N
-  PWM_ATTACH(MOTOR_LEFT_IN1, PWM_FREQ, PWM_RES, PWM_CHAN_IN1);
-  PWM_ATTACH(MOTOR_LEFT_IN2, PWM_FREQ, PWM_RES, PWM_CHAN_IN2);
-  PWM_ATTACH(MOTOR_RIGHT_IN3, PWM_FREQ, PWM_RES, PWM_CHAN_IN3);
-  PWM_ATTACH(MOTOR_RIGHT_IN4, PWM_FREQ, PWM_RES, PWM_CHAN_IN4);
+  // Configuração dos canais/pinos PWM LEDC para os motores de tração da ponte H L298N (IO14, IO15, IO13, IO12)
+  PWM_ATTACH(MOTOR_IN1, PWM_FREQ, PWM_RES, PWM_CHAN_IN1);
+  PWM_ATTACH(MOTOR_IN2, PWM_FREQ, PWM_RES, PWM_CHAN_IN2);
+  PWM_ATTACH(MOTOR_IN3, PWM_FREQ, PWM_RES, PWM_CHAN_IN3);
+  PWM_ATTACH(MOTOR_IN4, PWM_FREQ, PWM_RES, PWM_CHAN_IN4);
 
-  setMotorSpeeds(0, 0);
+  setDriveSpeed(0);
 }
 
-void setMotorSpeeds(int leftSpeed, int rightSpeed) {
-  motorLeftSpeed = constrain(leftSpeed, -255, 255);
-  motorRightSpeed = constrain(rightSpeed, -255, 255);
+void setupServo() {
+  // Configuração da saída PWM do Servomotor de Direção (50Hz no IO2)
+  PWM_ATTACH(SERVO_PIN, SERVO_FREQ, SERVO_RES, PWM_CHAN_SERVO);
+  setServoAngle(servoCenterAngle);
+}
 
-  // Motor Esquerdo
-  if (motorLeftSpeed > 0) {
-    PWM_WRITE(MOTOR_LEFT_IN1, PWM_CHAN_IN1, motorLeftSpeed);
-    PWM_WRITE(MOTOR_LEFT_IN2, PWM_CHAN_IN2, 0);
-  } else if (motorLeftSpeed < 0) {
-    PWM_WRITE(MOTOR_LEFT_IN1, PWM_CHAN_IN1, 0);
-    PWM_WRITE(MOTOR_LEFT_IN2, PWM_CHAN_IN2, abs(motorLeftSpeed));
-  } else {
-    PWM_WRITE(MOTOR_LEFT_IN1, PWM_CHAN_IN1, 0);
-    PWM_WRITE(MOTOR_LEFT_IN2, PWM_CHAN_IN2, 0);
-  }
+void setServoAngle(int angle) {
+  angle = constrain(angle, servoMinAngle, servoMaxAngle);
+  currentServoAngle = angle;
 
-  // Motor Direito
-  if (motorRightSpeed > 0) {
-    PWM_WRITE(MOTOR_RIGHT_IN3, PWM_CHAN_IN3, motorRightSpeed);
-    PWM_WRITE(MOTOR_RIGHT_IN4, PWM_CHAN_IN4, 0);
-  } else if (motorRightSpeed < 0) {
-    PWM_WRITE(MOTOR_RIGHT_IN3, PWM_CHAN_IN3, 0);
-    PWM_WRITE(MOTOR_RIGHT_IN4, PWM_CHAN_IN4, abs(motorRightSpeed));
+  // Mapeia o ângulo (0° a 180°) para o pulso PWM de 50Hz (500us a 2500us)
+  // Em 14 bits (0 a 16383): 500us = ~410, 2500us = ~2048
+  int duty = map(angle, 0, 180, 410, 2048);
+  PWM_WRITE(SERVO_PIN, PWM_CHAN_SERVO, duty);
+}
+
+void setDriveSpeed(int speed) {
+  currentDriveSpeed = constrain(speed, -255, 255);
+
+  if (currentDriveSpeed > 0) {
+    // Frente (IN1=14 e IN3=13 com PWM / IN2=15 e IN4=12 em LOW)
+    PWM_WRITE(MOTOR_IN1, PWM_CHAN_IN1, currentDriveSpeed);
+    PWM_WRITE(MOTOR_IN2, PWM_CHAN_IN2, 0);
+    PWM_WRITE(MOTOR_IN3, PWM_CHAN_IN3, currentDriveSpeed);
+    PWM_WRITE(MOTOR_IN4, PWM_CHAN_IN4, 0);
+  } else if (currentDriveSpeed < 0) {
+    // Ré (IN2=15 e IN4=12 com PWM / IN1=14 e IN3=13 em LOW)
+    int absSpd = abs(currentDriveSpeed);
+    PWM_WRITE(MOTOR_IN1, PWM_CHAN_IN1, 0);
+    PWM_WRITE(MOTOR_IN2, PWM_CHAN_IN2, absSpd);
+    PWM_WRITE(MOTOR_IN3, PWM_CHAN_IN3, 0);
+    PWM_WRITE(MOTOR_IN4, PWM_CHAN_IN4, absSpd);
   } else {
-    PWM_WRITE(MOTOR_RIGHT_IN3, PWM_CHAN_IN3, 0);
-    PWM_WRITE(MOTOR_RIGHT_IN4, PWM_CHAN_IN4, 0);
+    // Parado
+    PWM_WRITE(MOTOR_IN1, PWM_CHAN_IN1, 0);
+    PWM_WRITE(MOTOR_IN2, PWM_CHAN_IN2, 0);
+    PWM_WRITE(MOTOR_IN3, PWM_CHAN_IN3, 0);
+    PWM_WRITE(MOTOR_IN4, PWM_CHAN_IN4, 0);
   }
 }
 
@@ -319,8 +372,8 @@ void startCamera() {
   }
 
   sensor_t * s = esp_camera_sensor_get();
-  s->set_vflip(s, 1); // Inverter verticalmente se necessário
-  s->set_hmirror(s, 0);
+  s->set_vflip(s, 0); // Inverter verticalmente (0 = Normal, 1 = Invertido)
+  s->set_hmirror(s, 1);
   Serial.println("Câmera OV2640 Inicializada com Sucesso (QQVGA - Alta Performance)!");
 }
 
@@ -411,21 +464,22 @@ void processLineFollowing(uint8_t* rgb_buf, int width, int height) {
     // Se a linha for perdida, mantemos a última direção conhecida com curva acentuada
   }
 
-  // Cálculo do Erro de Desvio (-160 a +160)
-  int targetCenter = width / 2; // 160px
+  // Cálculo do Erro de Desvio (-80 a +80 no QQVGA)
+  int targetCenter = width / 2;
   int error = lineCenterPos - targetCenter;
   lastError = error;
 
-  // Se estiver em modo AUTO, calcula e aplica o controle PID nos motores
+  // Se estiver em modo AUTO, calcula o PID e esterça o Servomotor
   if (currentMode == MODE_AUTO) {
     if (!lineDetected) {
-      // Procura a linha virando no último sentido detectado
-      if (errorPrev > 0) setMotorSpeeds(baseSpeed, -baseSpeed);
-      else setMotorSpeeds(-baseSpeed, baseSpeed);
+      // Procura a linha esterçando para o último sentido conhecido
+      if (errorPrev > 0) setServoAngle(servoMaxAngle);
+      else setServoAngle(servoMinAngle);
+      setDriveSpeed(baseSpeed);
       return;
     }
 
-    // Cálculo do PID
+    // Cálculo do PID para controle do Servomotor
     float P = error;
     integral += error;
     integral = constrain(integral, -1000.0, 1000.0);
@@ -434,12 +488,11 @@ void processLineFollowing(uint8_t* rgb_buf, int width, int height) {
 
     float steering = (Kp * P) + (Ki * integral) + (Kd * D);
 
-    int leftMotor  = baseSpeed + (int)steering;
-    int rightMotor = baseSpeed - (int)steering;
+    // O PID ajusta o ângulo em torno da posição central do servo (servoCenterAngle = 90°)
+    int targetServoAngle = servoCenterAngle + (int)steering;
+    setServoAngle(targetServoAngle);
 
-    leftMotor  = constrain(leftMotor, -maxSpeed, maxSpeed);
-    rightMotor = constrain(rightMotor, -maxSpeed, maxSpeed);
-
-    setMotorSpeeds(leftMotor, rightMotor);
+    // Mantém a velocidade ajustável definida no motor de tração
+    setDriveSpeed(baseSpeed);
   }
 }
