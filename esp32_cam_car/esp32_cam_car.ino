@@ -73,6 +73,15 @@ const char* password = "password123";
 #define PWM_FREQ      5000
 #define PWM_RES       8 // Resolution 0-255
 
+// Compatibilidade entre ESP32 Arduino Core 2.x e 3.x (LEDC API)
+#if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
+  #define PWM_ATTACH(pin, freq, res, chan) ledcAttach(pin, freq, res)
+  #define PWM_WRITE(pin, chan, duty)       ledcWrite(pin, duty)
+#else
+  #define PWM_ATTACH(pin, freq, res, chan) do { ledcSetup(chan, freq, res); ledcAttachPin(pin, chan); } while(0)
+  #define PWM_WRITE(pin, chan, duty)       ledcWrite(chan, duty)
+#endif
+
 // ==========================================
 // VARIÁVEIS DE CONTROLE E PID
 // ==========================================
@@ -92,11 +101,11 @@ float Kd = 0.45;
 float errorPrev = 0;
 float integral  = 0;
 
-// Processamento de Imagem
+// Processamento de Imagem (Resolução QQVGA 160x120 para FPS máximo)
 int thresholdVal = 100;      // Limiar para binarização (0-255)
 bool isDarkLine  = true;     // true = linha preta em fundo claro, false = linha clara em fundo escuro
-int scanRowY     = 180;      // Linha Y de varredura (da imagem de 240px de altura)
-int lineCenterPos = 160;     // Posição encontrada da linha (largura 320px)
+int scanRowY     = 90;       // Linha Y de varredura (da imagem de 120px de altura)
+int lineCenterPos = 80;      // Posição encontrada da linha (largura 160px)
 bool lineDetected = false;
 int lastError     = 0;
 
@@ -202,6 +211,8 @@ void setup() {
     json += "\"fps\":" + String(fps, 1) + ",";
     json += "\"error\":" + String(lastError) + ",";
     json += "\"linePos\":" + String(lineCenterPos) + ",";
+    json += "\"camWidth\":160,";
+    json += "\"camHeight\":120,";
     json += "\"lineDetected\":" + String(lineDetected ? "true" : "false") + ",";
     json += "\"leftSpeed\":" + String(motorLeftSpeed) + ",";
     json += "\"rightSpeed\":" + String(motorRightSpeed) + ",";
@@ -214,6 +225,7 @@ void setup() {
     server.send(200, "application/json", json);
   });
 
+  server.enableCORS();
   server.begin();
   streamServer.begin();
   Serial.println("Servidores HTTP e Stream iniciados nas portas 80 e 81.");
@@ -231,16 +243,11 @@ void loop() {
 // CONFIGURAÇÃO DOS MOTORES (L298N)
 // ==========================================
 void setupMotors() {
-  // Configuração dos canais PWM LEDC para controle refinado da ponte H L298N
-  ledcSetup(PWM_CHAN_IN1, PWM_FREQ, PWM_RES);
-  ledcSetup(PWM_CHAN_IN2, PWM_FREQ, PWM_RES);
-  ledcSetup(PWM_CHAN_IN3, PWM_FREQ, PWM_RES);
-  ledcSetup(PWM_CHAN_IN4, PWM_FREQ, PWM_RES);
-
-  ledcAttachPin(MOTOR_LEFT_IN1, PWM_CHAN_IN1);
-  ledcAttachPin(MOTOR_LEFT_IN2, PWM_CHAN_IN2);
-  ledcAttachPin(MOTOR_RIGHT_IN3, PWM_CHAN_IN3);
-  ledcAttachPin(MOTOR_RIGHT_IN4, PWM_CHAN_IN4);
+  // Configuração dos canais/pinos PWM LEDC para controle refinado da ponte H L298N
+  PWM_ATTACH(MOTOR_LEFT_IN1, PWM_FREQ, PWM_RES, PWM_CHAN_IN1);
+  PWM_ATTACH(MOTOR_LEFT_IN2, PWM_FREQ, PWM_RES, PWM_CHAN_IN2);
+  PWM_ATTACH(MOTOR_RIGHT_IN3, PWM_FREQ, PWM_RES, PWM_CHAN_IN3);
+  PWM_ATTACH(MOTOR_RIGHT_IN4, PWM_FREQ, PWM_RES, PWM_CHAN_IN4);
 
   setMotorSpeeds(0, 0);
 }
@@ -251,26 +258,26 @@ void setMotorSpeeds(int leftSpeed, int rightSpeed) {
 
   // Motor Esquerdo
   if (motorLeftSpeed > 0) {
-    ledcWrite(PWM_CHAN_IN1, motorLeftSpeed);
-    ledcWrite(PWM_CHAN_IN2, 0);
+    PWM_WRITE(MOTOR_LEFT_IN1, PWM_CHAN_IN1, motorLeftSpeed);
+    PWM_WRITE(MOTOR_LEFT_IN2, PWM_CHAN_IN2, 0);
   } else if (motorLeftSpeed < 0) {
-    ledcWrite(PWM_CHAN_IN1, 0);
-    ledcWrite(PWM_CHAN_IN2, abs(motorLeftSpeed));
+    PWM_WRITE(MOTOR_LEFT_IN1, PWM_CHAN_IN1, 0);
+    PWM_WRITE(MOTOR_LEFT_IN2, PWM_CHAN_IN2, abs(motorLeftSpeed));
   } else {
-    ledcWrite(PWM_CHAN_IN1, 0);
-    ledcWrite(PWM_CHAN_IN2, 0);
+    PWM_WRITE(MOTOR_LEFT_IN1, PWM_CHAN_IN1, 0);
+    PWM_WRITE(MOTOR_LEFT_IN2, PWM_CHAN_IN2, 0);
   }
 
   // Motor Direito
   if (motorRightSpeed > 0) {
-    ledcWrite(PWM_CHAN_IN3, motorRightSpeed);
-    ledcWrite(PWM_CHAN_IN4, 0);
+    PWM_WRITE(MOTOR_RIGHT_IN3, PWM_CHAN_IN3, motorRightSpeed);
+    PWM_WRITE(MOTOR_RIGHT_IN4, PWM_CHAN_IN4, 0);
   } else if (motorRightSpeed < 0) {
-    ledcWrite(PWM_CHAN_IN3, 0);
-    ledcWrite(PWM_CHAN_IN4, abs(motorRightSpeed));
+    PWM_WRITE(MOTOR_RIGHT_IN3, PWM_CHAN_IN3, 0);
+    PWM_WRITE(MOTOR_RIGHT_IN4, PWM_CHAN_IN4, abs(motorRightSpeed));
   } else {
-    ledcWrite(PWM_CHAN_IN3, 0);
-    ledcWrite(PWM_CHAN_IN4, 0);
+    PWM_WRITE(MOTOR_RIGHT_IN3, PWM_CHAN_IN3, 0);
+    PWM_WRITE(MOTOR_RIGHT_IN4, PWM_CHAN_IN4, 0);
   }
 }
 
@@ -300,9 +307,9 @@ void startCamera() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  // Resolução QVGA (320x240) é a ideal para aliar bom FPS e precisão na detecção
-  config.frame_size = FRAMESIZE_QVGA;
-  config.jpeg_quality = 12; // 0-63 (menor = melhor qualidade)
+  // Resolução QQVGA (160x120) para máxima taxa de quadros (FPS ~30) e processamento ultra-rápido
+  config.frame_size = FRAMESIZE_QQVGA;
+  config.jpeg_quality = 15; // 0-63 (15 otimiza o payload de transmissão e aumenta a fluidez)
   config.fb_count = 2;
 
   esp_err_t err = esp_camera_init(&config);
@@ -314,7 +321,7 @@ void startCamera() {
   sensor_t * s = esp_camera_sensor_get();
   s->set_vflip(s, 1); // Inverter verticalmente se necessário
   s->set_hmirror(s, 0);
-  Serial.println("Câmera OV2640 Inicializada com Sucesso!");
+  Serial.println("Câmera OV2640 Inicializada com Sucesso (QQVGA - Alta Performance)!");
 }
 
 // ==========================================
@@ -325,6 +332,7 @@ void handleStream() {
   if (!client) return;
 
   client.println("HTTP/1.1 200 OK");
+  client.println("Access-Control-Allow-Origin: *");
   client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
   client.println();
 
@@ -336,11 +344,13 @@ void handleStream() {
     }
 
     // Processamento de visão computacional na imagem para o seguidor de linha
-    // Convertemos a imagem para escala de cinza de forma pontual para análise da linha de varredura
-    uint8_t * rgb_buf = (uint8_t *)malloc(320 * 240 * 3);
+    // Alocação dinâmica com base na dimensão real do frame (QQVGA 160x120)
+    int frameW = fb->width;
+    int frameH = fb->height;
+    uint8_t * rgb_buf = (uint8_t *)malloc(frameW * frameH * 3);
     if (rgb_buf != NULL) {
       if (fmt2rgb888(fb->buf, fb->len, fb->format, rgb_buf)) {
-        processLineFollowing(rgb_buf, 320, 240);
+        processLineFollowing(rgb_buf, frameW, frameH);
       }
       free(rgb_buf);
     }

@@ -11,7 +11,7 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusBadge = document.getElementById('statusBadge');
   const statusText = document.getElementById('statusText');
   const modeBadge = document.getElementById('modeBadge');
-  
+
   const mjpegStream = document.getElementById('mjpegStream');
   const overlayCanvas = document.getElementById('overlayCanvas');
   const scanlineCanvas = document.getElementById('scanlineCanvas');
@@ -108,7 +108,12 @@ document.addEventListener('DOMContentLoaded', () => {
   // Buscar Telemetria do ESP32
   async function fetchTelemetry() {
     try {
-      const resp = await fetch(`http://${espIp}/api/telemetry`, { signal: AbortSignal.timeout(1500) });
+      let resp;
+      try {
+        resp = await fetch(`http://${espIp}/api/telemetry`, { signal: AbortSignal.timeout(1500) });
+      } catch (e) {
+        resp = await fetch(`/esp32-proxy/api/telemetry?espIp=${espIp}`, { signal: AbortSignal.timeout(1500) });
+      }
       if (!resp.ok) throw new Error('HTTP Error');
       const data = await resp.json();
 
@@ -121,9 +126,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   // Atualizar Elementos de Interface com os Dados do ESP32
   function updateUIWithTelemetry(data) {
+    const camW = data.camWidth || 160;
+    const camH = data.camHeight || 120;
+    const targetCenter = camW / 2;
+
     // FPS e Métricas de Visão
     fpsVal.textContent = data.fps ? data.fps.toFixed(1) : '0.0';
-    valLinePos.textContent = `${data.linePos || 160} px`;
+    valLinePos.textContent = `${data.linePos || targetCenter} px`;
     valError.textContent = `${data.error || 0} px`;
 
     if (data.lineDetected) {
@@ -145,44 +154,46 @@ document.addEventListener('DOMContentLoaded', () => {
     barMotorRight.style.width = `${Math.min(100, Math.abs(rightPwm) / 2.55)}%`;
 
     // Desenhar Visão e Gráfico
-    drawOverlay(data.linePos || 160, data.error || 0, data.lineDetected);
-    drawScanlinePreview(data.linePos || 160, data.thresh || 100);
+    drawOverlay(data.linePos || targetCenter, data.error || 0, data.lineDetected, camW, camH);
+    drawScanlinePreview(data.linePos || targetCenter, data.thresh || 100, camW);
     pushErrorChart(data.error || 0);
   }
 
   // Desenhar Overlay no Vídeo
-  function drawOverlay(linePos, error, detected) {
+  function drawOverlay(linePos, error, detected, camW = 160, camH = 120) {
     const w = overlayCanvas.width;
     const h = overlayCanvas.height;
     ctxOverlay.clearRect(0, 0, w, h);
 
     if (w === 0 || h === 0) return;
 
-    // Escala (Câmera 320x240 -> Tela Canvas)
-    const scaleX = w / 320;
-    const scaleY = h / 240;
+    // Escala (Câmera -> Tela Canvas)
+    const scaleX = w / camW;
+    const scaleY = h / camH;
+    const targetCenter = camW / 2;
+    const scanY = camH * 0.75;
 
-    // Linha Central Guia (Alvo = 160px)
+    // Linha Central Guia (Alvo)
     ctxOverlay.strokeStyle = 'rgba(0, 242, 254, 0.5)';
     ctxOverlay.setLineDash([5, 5]);
     ctxOverlay.lineWidth = 2;
     ctxOverlay.beginPath();
-    ctxOverlay.moveTo(160 * scaleX, 0);
-    ctxOverlay.lineTo(160 * scaleX, h);
+    ctxOverlay.moveTo(targetCenter * scaleX, 0);
+    ctxOverlay.lineTo(targetCenter * scaleX, h);
     ctxOverlay.stroke();
     ctxOverlay.setLineDash([]);
 
-    // Linha Y de Varredura (y = 180px)
+    // Linha Y de Varredura
     ctxOverlay.strokeStyle = 'rgba(255, 165, 0, 0.6)';
     ctxOverlay.lineWidth = 1;
     ctxOverlay.beginPath();
-    ctxOverlay.moveTo(0, 180 * scaleY);
-    ctxOverlay.lineTo(w, 180 * scaleY);
+    ctxOverlay.moveTo(0, scanY * scaleY);
+    ctxOverlay.lineTo(w, scanY * scaleY);
     ctxOverlay.stroke();
 
     if (detected) {
       const posX = linePos * scaleX;
-      const posY = 180 * scaleY;
+      const posY = scanY * scaleY;
 
       // Ponto focal da linha detectada
       ctxOverlay.fillStyle = '#00ff87';
@@ -194,21 +205,21 @@ document.addEventListener('DOMContentLoaded', () => {
       ctxOverlay.strokeStyle = '#ff4757';
       ctxOverlay.lineWidth = 3;
       ctxOverlay.beginPath();
-      ctxOverlay.moveTo(160 * scaleX, posY);
+      ctxOverlay.moveTo(targetCenter * scaleX, posY);
       ctxOverlay.lineTo(posX, posY);
       ctxOverlay.stroke();
     }
   }
 
   // Desenhar Fita da Linha Binarizada
-  function drawScanlinePreview(linePos, thresh) {
+  function drawScanlinePreview(linePos, thresh, camW = 160) {
     const w = scanlineCanvas.width;
     const h = scanlineCanvas.height;
     ctxScanline.fillStyle = '#0a0e17';
     ctxScanline.fillRect(0, 0, w, h);
 
-    const scaleX = w / 320;
-    const lineWidthPx = 30 * scaleX;
+    const scaleX = w / camW;
+    const lineWidthPx = 20 * scaleX;
     const posX = linePos * scaleX;
 
     // Desenhar pista simulada
@@ -282,7 +293,7 @@ document.addEventListener('DOMContentLoaded', () => {
     if (window.lucide) lucide.createIcons();
 
     // Enviar comando ao ESP32
-    fetch(`http://${espIp}/api/mode?val=${mode}`).catch(() => {});
+    fetch(`http://${espIp}/api/mode?val=${mode}`).catch(() => { });
   }
 
   btnModeAuto.addEventListener('click', () => setMode('AUTO'));
@@ -292,7 +303,7 @@ document.addEventListener('DOMContentLoaded', () => {
   function sendControl(dir) {
     if (currentMode !== 'MANUAL') return;
     const speed = rngSpeed.value;
-    fetch(`http://${espIp}/api/control?dir=${dir}&speed=${speed}`).catch(() => {});
+    fetch(`http://${espIp}/api/control?dir=${dir}&speed=${speed}`).catch(() => { });
   }
 
   document.querySelectorAll('.dpad-btn').forEach(btn => {
