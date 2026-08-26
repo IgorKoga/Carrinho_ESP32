@@ -1,0 +1,206 @@
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>ESP32-CAM Robô Seguidor de Linha - Painel de Controle</title>
+  <!-- Google Fonts -->
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=JetBrains+Mono:wght@400;600;700&family=Outfit:wght@300;400;500;600;700&display=swap" rel="stylesheet">
+  <!-- Lucide Icons -->
+  <script src="https://unpkg.com/lucide@latest"></script>
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+  <div class="app-container">
+    <!-- Header Principal HUD -->
+    <header class="hud-header">
+      <div class="header-title">
+        <div class="logo-icon"><i data-lucide="bot"></i></div>
+        <div>
+          <h1>ESP32-CAM <span>ROBO VISION</span></h1>
+          <p class="subtitle">Sistema Autônomo Seguidor de Linha & Telemetria em Tempo Real</p>
+        </div>
+      </div>
+
+      <div class="header-controls">
+        <!-- Conexão IP ESP32 -->
+        <div class="ip-config-card">
+          <label for="espIpInput"><i data-lucide="wifi"></i> IP do ESP32:</label>
+          <input type="text" id="espIpInput" value="192.168.4.1" placeholder="Ex: 192.168.4.1 ou 192.168.1.100">
+          <button id="btnConnect" class="btn btn-primary"><i data-lucide="refresh-cw"></i> Conectar</button>
+        </div>
+
+        <!-- Badges de Status -->
+        <div class="status-badge-container">
+          <div id="statusBadge" class="status-badge disconnected">
+            <span class="status-dot"></span>
+            <span id="statusText">Desconectado</span>
+          </div>
+          <div id="modeBadge" class="mode-badge auto">
+            <i data-lucide="cpu"></i> MODO AUTÔNOMO
+          </div>
+        </div>
+      </div>
+    </header>
+
+    <!-- Layout Grid Principal -->
+    <main class="hud-grid">
+      <!-- Coluna Esquerda: Câmera & Visão Computacional -->
+      <section class="card vision-card">
+        <div class="card-header">
+          <h2><i data-lucide="video"></i> Câmera & Visão Computacional</h2>
+          <div class="fps-tag"><i data-lucide="activity"></i> <span id="fpsVal">0.0</span> FPS</div>
+        </div>
+
+        <div class="video-container">
+          <!-- Feed MJPEG da Câmera -->
+          <img id="mjpegStream" src="" alt="Aguardando Stream de Vídeo do ESP32-CAM..." crossorigin="anonymous">
+          <!-- Overlay de Visão Computacional (Desenho da linha e vetor de erro) -->
+          <canvas id="overlayCanvas"></canvas>
+          <div id="streamPlaceholder" class="stream-placeholder">
+            <i data-lucide="camera-off"></i>
+            <p>Stream Não Conectado</p>
+            <small>Clique em "Conectar" ou verifique o IP do ESP32</small>
+          </div>
+        </div>
+
+        <!-- Visualizador Binarizado (Linha Detectada) -->
+        <div class="cv-analytics">
+          <div class="cv-header">
+            <span><i data-lucide="scan"></i> Linha de Varredura Processada:</span>
+            <span id="lineDetectState" class="badge-detect">Linha Detectada</span>
+          </div>
+          <div class="scanline-preview">
+            <canvas id="scanlineCanvas" height="40"></canvas>
+          </div>
+          <div class="cv-metrics">
+            <div class="metric-box">
+              <span class="metric-label">Posição da Linha (X)</span>
+              <span class="metric-value" id="valLinePos">160 px</span>
+            </div>
+            <div class="metric-box">
+              <span class="metric-label">Erro de Desvio (Offset)</span>
+              <span class="metric-value" id="valError">0 px</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <!-- Coluna Direita: Painel de Controle & Ajustes -->
+      <section class="control-column">
+        <!-- Alternador de Modo: AUTO vs MANUAL -->
+        <div class="card mode-switch-card">
+          <h2><i data-lucide="sliders"></i> Modo de Operação</h2>
+          <div class="mode-toggle-group">
+            <button id="btnModeAuto" class="btn-mode active">
+              <i data-lucide="bot"></i>
+              <span>Autônomo (Seguidor)</span>
+            </button>
+            <button id="btnModeManual" class="btn-mode">
+              <i data-lucide="gamepad-2"></i>
+              <span>Manual (Controle)</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- Painel de Controle Manual D-Pad -->
+        <div class="card dpad-card" id="manualControls">
+          <h2><i data-lucide="navigation"></i> Controle Manual (WASD / Setas)</h2>
+          <div class="dpad-wrapper">
+            <button class="dpad-btn up" id="btnFwd" data-dir="FORWARD"><i data-lucide="chevron-up"></i></button>
+            <div class="dpad-middle">
+              <button class="dpad-btn left" id="btnLeft" data-dir="LEFT"><i data-lucide="chevron-left"></i></button>
+              <button class="dpad-btn stop" id="btnStop" data-dir="STOP"><i data-lucide="square"></i></button>
+              <button class="dpad-btn right" id="btnRight" data-dir="RIGHT"><i data-lucide="chevron-right"></i></button>
+            </div>
+            <button class="dpad-btn down" id="btnRev" data-dir="BACKWARD"><i data-lucide="chevron-down"></i></button>
+          </div>
+        </div>
+
+        <!-- Ajuste de Parâmetros PID e Visão -->
+        <div class="card settings-card">
+          <h2><i data-lucide="settings"></i> Ajuste Fino PID & Visão</h2>
+
+          <!-- Slider Velocidade Base -->
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Velocidade Base (PWM)</span>
+              <span id="lblSpeed">160</span>
+            </div>
+            <input type="range" id="rngSpeed" min="60" max="255" value="160">
+          </div>
+
+          <!-- Slider Threshold (Limiar de Cor) -->
+          <div class="setting-item">
+            <div class="setting-label">
+              <span>Threshold Binarização (Cor)</span>
+              <span id="lblThresh">100</span>
+            </div>
+            <input type="range" id="rngThresh" min="0" max="255" value="100">
+          </div>
+
+          <!-- Toggle Tipo de Linha -->
+          <div class="setting-item toggle-item">
+            <span>Tipo de Linha:</span>
+            <label class="switch">
+              <input type="checkbox" id="chkDarkLine" checked>
+              <span class="slider-round"></span>
+            </label>
+            <span id="lblLineType">Linha Preta (Fundo Claro)</span>
+          </div>
+
+          <!-- Sliders PID -->
+          <div class="pid-grid">
+            <div class="setting-item">
+              <div class="setting-label"><span>Kp (Proporcional)</span><span id="lblKp">1.25</span></div>
+              <input type="range" id="rngKp" min="0" max="5" step="0.05" value="1.25">
+            </div>
+            <div class="setting-item">
+              <div class="setting-label"><span>Ki (Integral)</span><span id="lblKi">0.00</span></div>
+              <input type="range" id="rngKi" min="0" max="1" step="0.01" value="0.00">
+            </div>
+            <div class="setting-item">
+              <div class="setting-label"><span>Kd (Derivativo)</span><span id="lblKd">0.45</span></div>
+              <input type="range" id="rngKd" min="0" max="3" step="0.05" value="0.45">
+            </div>
+          </div>
+
+          <button id="btnSaveSettings" class="btn btn-secondary"><i data-lucide="save"></i> Aplicar Parâmetros ao ESP32</button>
+        </div>
+      </section>
+    </main>
+
+    <!-- Telemetria Inferior (Gráficos e Status dos Motores) -->
+    <footer class="telemetry-panel">
+      <div class="card telemetry-card">
+        <div class="card-header">
+          <h2><i data-lucide="line-chart"></i> Gráfico em Tempo Real: Erro de Desvio da Linha (px)</h2>
+        </div>
+        <div class="chart-container">
+          <canvas id="errorChart" height="90"></canvas>
+        </div>
+      </div>
+
+      <div class="card motors-card">
+        <h2><i data-lucide="gauge"></i> Status dos Motores (L298N)</h2>
+        <div class="motor-meters">
+          <div class="motor-box">
+            <span>Motor Esquerdo</span>
+            <div class="meter-bar"><div id="barMotorLeft" class="meter-fill" style="width: 0%;"></div></div>
+            <span id="valMotorLeft" class="meter-val">0 PWM</span>
+          </div>
+          <div class="motor-box">
+            <span>Motor Direito</span>
+            <div class="meter-bar"><div id="barMotorRight" class="meter-fill" style="width: 0%;"></div></div>
+            <span id="valMotorRight" class="meter-val">0 PWM</span>
+          </div>
+        </div>
+      </div>
+    </footer>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>
