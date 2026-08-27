@@ -24,6 +24,8 @@
 #include <WiFi.h>
 #include <esp_timer.h>
 #include <img_converters.h>
+#include "soc/soc.h"
+#include "soc/rtc_cntl_reg.h"
 
 // ==========================================
 // CONFIGURAÇÃO DE REDE WI-FI
@@ -98,7 +100,7 @@ const char *password = "password123";
 // VARIÁVEIS DE CONTROLE, SERVO E PID
 // ==========================================
 enum Mode { MODE_MANUAL, MODE_AUTO };
-Mode currentMode = MODE_AUTO;
+Mode currentMode = MODE_AUTO; // 🚨 INICIA NO MODO AUTÔNOMO 🚨
 
 bool flashState = false; // Estado do Flash LED (GPIO 4)
 
@@ -109,10 +111,18 @@ int minSpeed = 0;
 int currentDriveSpeed = 0;
 
 // Parâmetros do Servomotor de Direção (Ângulos em Graus)
-int currentServoAngle = 90;
-int servoCenterAngle = 90; // Posição central / reto (90°)
-int servoMinAngle = 45;    // Limite máximo de curva à direita (graus)
-int servoMaxAngle = 135;   // Limite máximo de curva à esquerda (graus)
+// ==========================================
+// 🚨 CALIBRAÇÃO FÍSICA DO SERVO (MUITO IMPORTANTE) 🚨
+// Ajuste este valor de SERVO_CENTER até que as rodas fiquem PERFEITAMENTE RETAS ao ligar.
+// Se o carrinho ligar apontando levemente para a direita, AUMENTE este valor (ex: 95, 105).
+// Se ligar apontando levemente para a esquerda, DIMINUA este valor (ex: 85, 75).
+// ==========================================
+int SERVO_CENTER = 90;
+
+int currentServoAngle = SERVO_CENTER;
+int servoCenterAngle = SERVO_CENTER;     // Posição central / reto (Baseada na calibração física)
+int servoMinAngle = SERVO_CENTER - 45;   // Limite máximo de curva à direita (Menor ângulo vira Direita)
+int servoMaxAngle = SERVO_CENTER + 45;   // Limite máximo de curva à esquerda (Maior ângulo vira Esquerda)
 
 // Parâmetros PID para o Seguidor de Linha (Ajusta o Ângulo do Servo)
 float Kp = 0.50;
@@ -139,6 +149,7 @@ unsigned long lastFpsTime = 0;
 // Servidores HTTP
 WebServer server(80);
 WiFiServer streamServer(81);
+WiFiClient streamClient; // Cliente global para o stream de vídeo
 
 // Forward declarations
 void startCamera();
@@ -147,12 +158,12 @@ void setupServo();
 void setServoAngle(int angle);
 void setDriveSpeed(int speed);
 void processLineFollowing(uint8_t *buf, int width, int height);
-void handleStream();
 
 // ==========================================
 // SETUP INICIAL
 // ==========================================
 void setup() {
+  WRITE_PERI_REG(RTC_CNTL_BROWN_OUT_REG, 0); // Desativa o detector de Brownout (evita reset por oscilação de tensão ao mover o servo)
   Serial.begin(115200);
   Serial.setDebugOutput(true);
   Serial.println("\n--- INICIALIZANDO CARRINHO ESP32-CAM ---");
@@ -331,11 +342,64 @@ void setup() {
 }
 
 // ==========================================
-// LOOP PRINCIPAL
+// LOOP PRINCIPAL E CONTROLE AUTÔNOMO
 // ==========================================
 void loop() {
-  server.handleClient();
-  handleStream();
+  server.handleClient(); // Processa chamadas da API REST, se houver
+
+  // Verifica se há um NOVO cliente querendo ver o vídeo
+  if (streamServer.hasClient()) {
+    if (streamClient) streamClient.stop();
+    streamClient = streamServer.available();
+    streamClient.println("HTTP/1.1 200 OK");
+    streamClient.println("Access-Control-Allow-Origin: *");
+    streamClient.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
+    streamClient.println();
+  }
+
+  // 📷 CAPTURA O QUADRO DA CÂMERA (RODA SEMPRE, 100% DO TEMPO)
+  camera_fb_t *fb = esp_camera_fb_get();
+  if (!fb) {
+    Serial.println("Falha na captura do Frame Buffer");
+    return;
+  }
+
+  // 🤖 PROCESSAMENTO DO MODO AUTÔNOMO (INDEPENDENTE DO SERVIDOR)
+  // Como o loop roda continuamente, o carrinho segue a linha sozinho,
+  // mesmo que ninguém tenha aberto o painel web no navegador.
+  if (currentMode == MODE_AUTO) {
+    int frameW = fb->width;
+    int frameH = fb->height;
+    static uint8_t rgb_buf[160 * 120 * 3]; // Buffer estático para conversão da imagem
+    if (frameW * frameH * 3 <= (int)sizeof(rgb_buf)) {
+      if (fmt2rgb888(fb->buf, fb->len, fb->format, rgb_buf)) {
+        processLineFollowing(rgb_buf, frameW, frameH); // A mágica da linha acontece aqui
+      }
+    }
+  }
+
+  // 📺 SE ALGUÉM ESTIVER ASSISTINDO, ENVIA A IMAGEM
+  if (streamClient && streamClient.connected()) {
+    streamClient.println("--frame");
+    streamClient.println("Content-Type: image/jpeg");
+    streamClient.printf("Content-Length: %u\r\n\r\n", fb->len);
+    streamClient.write(fb->buf, fb->len);
+    streamClient.println();
+  } else if (streamClient) {
+    streamClient.stop(); // Desconecta clientes inativos ou que fecharam o navegador
+  }
+
+  esp_camera_fb_return(fb); // Libera o frame para a próxima captura
+
+  // Cálculo de FPS
+  frameCount++;
+  if (millis() - lastFpsTime >= 1000) {
+    fps = frameCount * 1000.0 / (millis() - lastFpsTime);
+    frameCount = 0;
+    lastFpsTime = millis();
+  }
+
+  delay(1); // Cede a CPU para que o ESP32 não trave
 }
 
 // ==========================================
@@ -450,126 +514,98 @@ void startCamera() {
 }
 
 // ==========================================
-// STREAM DE VÍDEO MJPEG E PROCESSAMENTO DE LINHA
-// ==========================================
-void handleStream() {
-  WiFiClient client = streamServer.available();
-  if (!client)
-    return;
-
-  client.println("HTTP/1.1 200 OK");
-  client.println("Access-Control-Allow-Origin: *");
-  client.println("Content-Type: multipart/x-mixed-replace; boundary=frame");
-  client.println();
-
-  while (client.connected()) {
-    camera_fb_t *fb = esp_camera_fb_get();
-    if (!fb) {
-      Serial.println("Falha na captura do Frame Buffer");
-      break;
-    }
-
-    // Processamento de visão computacional na imagem para o seguidor de linha
-    // Alocação dinâmica com base na dimensão real do frame (QQVGA 160x120)
-    int frameW = fb->width;
-    int frameH = fb->height;
-    uint8_t *rgb_buf = (uint8_t *)malloc(frameW * frameH * 3);
-    if (rgb_buf != NULL) {
-      if (fmt2rgb888(fb->buf, fb->len, fb->format, rgb_buf)) {
-        processLineFollowing(rgb_buf, frameW, frameH);
-      }
-      free(rgb_buf);
-    }
-
-    // Envio do Frame JPEG via MJPEG HTTP Stream
-    client.println("--frame");
-    client.println("Content-Type: image/jpeg");
-    client.printf("Content-Length: %u\r\n\r\n", fb->len);
-    client.write(fb->buf, fb->len);
-    client.println();
-
-    esp_camera_fb_return(fb);
-
-    // Cálculo de FPS
-    frameCount++;
-    if (millis() - lastFpsTime >= 1000) {
-      fps = frameCount * 1000.0 / (millis() - lastFpsTime);
-      frameCount = 0;
-      lastFpsTime = millis();
-    }
-
-    server.handleClient(); // Processa chamadas HTTP pendentes
-  }
-}
-
-// ==========================================
 // ALGORITMO SEGUIDOR DE LINHA (VISÃO COMPUTACIONAL & PID)
 // ==========================================
 void processLineFollowing(uint8_t *rgb_buf, int width, int height) {
-  // Amostramos uma faixa horizontal da imagem (scanline Y)
-  int rowY = constrain(scanRowY, 0, height - 1);
+  // 1. DETECÇÃO DA LINHA (Região de Interesse - ROI)
+  // Em vez de olhar apenas para uma linha fina e suscetível a ruídos, 
+  // analisamos um "bloco" na parte inferior da imagem (onde o carrinho está prestes a passar).
+  int scanStartY = height * 0.6; // Começa a olhar a partir de 60% da altura da imagem
+  int scanEndY = height * 0.95;  // Termina aos 95% da imagem (evita olhar para a ponta do próprio chassi)
+  
   long weightedSum = 0;
   long sumPixels = 0;
 
-  for (int x = 0; x < width; x++) {
-    int index = (rowY * width + x) * 3;
-    uint8_t r = rgb_buf[index];
-    uint8_t g = rgb_buf[index + 1];
-    uint8_t b = rgb_buf[index + 2];
+  for (int y = scanStartY; y <= scanEndY; y++) {
+    for (int x = 0; x < width; x++) {
+      int index = (y * width + x) * 3;
+      uint8_t r = rgb_buf[index];
+      uint8_t g = rgb_buf[index + 1];
+      uint8_t b = rgb_buf[index + 2];
 
-    // Converter para escala de cinza (Luminância)
-    uint8_t gray = (uint8_t)(0.299 * r + 0.587 * g + 0.114 * b);
+      // Converter para escala de cinza (Luminância)
+      uint8_t gray = (uint8_t)(0.299 * r + 0.587 * g + 0.114 * b);
 
-    // Binarização baseada em Threshold
-    bool isMatch = isDarkLine ? (gray < thresholdVal) : (gray > thresholdVal);
+      // Binarização: Verifica se o pixel corresponde à linha
+      bool isMatch = isDarkLine ? (gray < thresholdVal) : (gray > thresholdVal);
 
-    if (isMatch) {
-      weightedSum += x;
-      sumPixels++;
+      if (isMatch) {
+        weightedSum += x;
+        sumPixels++;
+      }
     }
   }
 
-  if (sumPixels > 5) {
+  // 2. CÁLCULO DO CENTRO DA LINHA E ERRO
+  if (sumPixels > 10) { // Se achou um mínimo razoável de pixels que compõem a linha
     lineDetected = true;
-    lineCenterPos = weightedSum / sumPixels;
+    lineCenterPos = weightedSum / sumPixels; // Encontra a posição X média (centro de massa da linha)
   } else {
     lineDetected = false;
-    // Se a linha for perdida, mantemos a última direção conhecida com curva
-    // acentuada
   }
 
-  // Cálculo do Erro de Desvio (-80 a +80 no QQVGA)
+  // O centro desejado da pista é exatamente o meio da imagem da câmera
   int targetCenter = width / 2;
+  
+  // O erro mede o desvio lateral da linha em relação ao centro da imagem.
+  // Ex: se o centro é 80 e a linha está em 40 (linha à ESQUERDA), erro = -40.
+  // Ex: se o centro é 80 e a linha está em 120 (linha à DIREITA), erro = +40.
   int error = lineCenterPos - targetCenter;
   lastError = error;
 
-  // Se estiver em modo AUTO, calcula o PID e esterça o Servomotor
+  // 3. CONTROLE DE DIREÇÃO (PID e Lógica de Movimento)
   if (currentMode == MODE_AUTO) {
     if (!lineDetected) {
-      // Procura a linha esterçando para o último sentido conhecido
-      if (errorPrev > 0)
-        setServoAngle(servoMaxAngle);
+      // Se perdeu a linha completamente, continua virando suavemente para procurar no último sentido
+      if (errorPrev > 10)
+        setServoAngle(servoMinAngle + 15); // Vira direita suavemente para tentar achar
+      else if (errorPrev < -10)
+        setServoAngle(servoMaxAngle - 15); // Vira esquerda suavemente para tentar achar
       else
-        setServoAngle(servoMinAngle);
+        setServoAngle(servoCenterAngle); // Mantém reto
       setDriveSpeed(baseSpeed);
       return;
     }
 
-    // Cálculo do PID para controle do Servomotor
+    // Calcula PID
     float P = error;
     integral += error;
-    integral = constrain(integral, -1000.0, 1000.0);
+    integral = constrain(integral, -500.0, 500.0); // Previne windup da integral
     float D = error - errorPrev;
     errorPrev = error;
 
     float steering = (Kp * P) + (Ki * integral) + (Kd * D);
 
-    // O PID ajusta o ângulo em torno da posição central do servo
-    // (servoCenterAngle = 90°)
-    int targetServoAngle = servoCenterAngle + (int)steering;
+    // 🚨 IMPORTANTE: Correção MATEMÁTICA DA DIREÇÃO DO SERVO 🚨
+    // O sistema funciona assim:
+    // - Para virar à DIREITA, o ângulo do servo deve ser MENOR que o centro. (ex: 45)
+    // - Para virar à ESQUERDA, o ângulo do servo deve ser MAIOR que o centro. (ex: 135)
+    //
+    // Se a linha está à ESQUERDA do centro (erro negativo):
+    // - O 'steering' será um valor negativo (ex: -20).
+    // - Nós precisamos virar à ESQUERDA, então o ângulo final precisa ser MAIOR que o centro.
+    // - Solução matemática: SUBTRAÍMOS o steering. Ex: 90 - (-20) = 110 (o servo vira pra esquerda).
+    //
+    // Se a linha está à DIREITA (erro positivo):
+    // - O 'steering' será positivo (ex: +20).
+    // - Para virar à DIREITA, o ângulo final precisa ser MENOR.
+    // - Solução: Ex: 90 - (+20) = 70 (o servo vira pra direita).
+    int targetServoAngle = servoCenterAngle - (int)steering;
+    
+    // Limita o movimento para o servo não quebrar fisicamente
+    targetServoAngle = constrain(targetServoAngle, servoMinAngle, servoMaxAngle);
+    
     setServoAngle(targetServoAngle);
-
-    // Mantém a velocidade ajustável definida no motor de tração
     setDriveSpeed(baseSpeed);
   }
 }
