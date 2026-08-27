@@ -51,7 +51,12 @@
       <section class="card vision-card">
         <div class="card-header">
           <h2><i data-lucide="video"></i> Câmera & Visão Computacional</h2>
-          <div class="fps-tag"><i data-lucide="activity"></i> <span id="fpsVal">0.0</span> FPS</div>
+          <div class="header-actions">
+            <button id="btnFlashToggle" class="btn-flash" title="Ligar/Desligar Flash LED">
+              <i data-lucide="zap"></i> <span id="lblFlashState">Flash OFF</span>
+            </button>
+            <div class="fps-tag"><i data-lucide="activity"></i> <span id="fpsVal">0.0</span> FPS</div>
+          </div>
         </div>
 
         <div class="video-container">
@@ -149,6 +154,16 @@
               <span class="slider-round"></span>
             </label>
             <span id="lblLineType">Linha Preta (Fundo Claro)</span>
+          </div>
+
+          <!-- Toggle Inverter Overlay da Linha -->
+          <div class="setting-item toggle-item">
+            <span>Inverter Overlay Linha:</span>
+            <label class="switch">
+              <input type="checkbox" id="chkInvertOverlay" checked>
+              <span class="slider-round"></span>
+            </label>
+            <span id="lblInvertOverlay">Linha Invertida (Alinhada)</span>
           </div>
 
           <!-- Sliders PID -->

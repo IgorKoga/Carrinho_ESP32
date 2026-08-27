@@ -12,6 +12,9 @@ document.addEventListener('DOMContentLoaded', () => {
   const statusText = document.getElementById('statusText');
   const modeBadge = document.getElementById('modeBadge');
 
+  const btnFlashToggle = document.getElementById('btnFlashToggle');
+  const lblFlashState = document.getElementById('lblFlashState');
+
   const mjpegStream = document.getElementById('mjpegStream');
   const overlayCanvas = document.getElementById('overlayCanvas');
   const scanlineCanvas = document.getElementById('scanlineCanvas');
@@ -32,6 +35,8 @@ document.addEventListener('DOMContentLoaded', () => {
   const lblThresh = document.getElementById('lblThresh');
   const chkDarkLine = document.getElementById('chkDarkLine');
   const lblLineType = document.getElementById('lblLineType');
+  const chkInvertOverlay = document.getElementById('chkInvertOverlay');
+  const lblInvertOverlay = document.getElementById('lblInvertOverlay');
 
   const rngKp = document.getElementById('rngKp');
   const lblKp = document.getElementById('lblKp');
@@ -59,6 +64,12 @@ document.addEventListener('DOMContentLoaded', () => {
   let currentMode = 'AUTO';
   let telemetryTimer = null;
   let errorHistory = new Array(50).fill(0);
+  let flashActive = false;
+
+  // Estado do Controle Manual (Prevenção de Request Flooding)
+  const activeKeys = new Set();
+  let lastSentThrottle = null;
+  let lastSentSteer = null;
 
   // Inicializar Canvas
   function resizeCanvas() {
@@ -87,13 +98,12 @@ document.addEventListener('DOMContentLoaded', () => {
     };
 
     mjpegStream.onerror = () => {
-      // Se falhar o carregamento direto, exibe o placeholder mas tenta ler a telemetria
       streamPlaceholder.style.display = 'flex';
     };
 
     // Iniciar Pooling de Telemetria
     if (telemetryTimer) clearInterval(telemetryTimer);
-    telemetryTimer = setInterval(fetchTelemetry, 200);
+    telemetryTimer = setInterval(fetchTelemetry, 250);
   }
 
   function setConnected(connected) {
@@ -132,6 +142,12 @@ document.addEventListener('DOMContentLoaded', () => {
     const camH = data.camHeight || 120;
     const targetCenter = camW / 2;
 
+    // Flash LED
+    if (data.flash !== undefined) {
+      flashActive = data.flash;
+      updateFlashUI(flashActive);
+    }
+
     // FPS e Métricas de Visão
     fpsVal.textContent = data.fps ? data.fps.toFixed(1) : '0.0';
     valLinePos.textContent = `${data.linePos || targetCenter} px`;
@@ -148,14 +164,13 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // Actuadores: Tração e Servomotor
-    const drivePwm = data.driveSpeed !== undefined ? data.driveSpeed : (data.leftSpeed || 0);
+    const drivePwm = data.driveSpeed !== undefined ? data.driveSpeed : 0;
     const angle = data.servoAngle !== undefined ? data.servoAngle : 90;
 
     valDriveSpeed.textContent = `${drivePwm} PWM`;
     barDriveSpeed.style.width = `${Math.min(100, Math.abs(drivePwm) / 2.55)}%`;
 
     valServoAngle.textContent = `${angle}°`;
-    // Mapeia de 0-180° para 0-100% da barra visual
     barServoAngle.style.width = `${Math.min(100, Math.max(0, (angle / 180) * 100))}%`;
 
     // Desenhar Visão e Gráfico
@@ -164,7 +179,30 @@ document.addEventListener('DOMContentLoaded', () => {
     pushErrorChart(data.error || 0);
   }
 
-  // Desenhar Overlay no Vídeo
+  // Controle do Flash LED
+  function toggleFlash() {
+    flashActive = !flashActive;
+    updateFlashUI(flashActive);
+    const val = flashActive ? '1' : '0';
+    fetch(`http://${espIp}/api/flash?val=${val}`).catch(() => {});
+  }
+
+  function updateFlashUI(active) {
+    if (!btnFlashToggle) return;
+    if (active) {
+      btnFlashToggle.classList.add('active');
+      lblFlashState.textContent = 'Flash ON';
+    } else {
+      btnFlashToggle.classList.remove('active');
+      lblFlashState.textContent = 'Flash OFF';
+    }
+  }
+
+  if (btnFlashToggle) {
+    btnFlashToggle.addEventListener('click', toggleFlash);
+  }
+
+  // Desenhar Overlay no Vídeo (Com inversão configurável para alinhar com o stream da câmera)
   function drawOverlay(linePos, error, detected, camW = 160, camH = 120) {
     const w = overlayCanvas.width;
     const h = overlayCanvas.height;
@@ -172,7 +210,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
     if (w === 0 || h === 0) return;
 
-    // Escala (Câmera -> Tela Canvas)
     const scaleX = w / camW;
     const scaleY = h / camH;
     const targetCenter = camW / 2;
@@ -197,7 +234,10 @@ document.addEventListener('DOMContentLoaded', () => {
     ctxOverlay.stroke();
 
     if (detected) {
-      const posX = linePos * scaleX;
+      const shouldInvert = chkInvertOverlay ? chkInvertOverlay.checked : true;
+      const effectivePos = shouldInvert ? (camW - linePos) : linePos;
+
+      const posX = effectivePos * scaleX;
       const posY = scanY * scaleY;
 
       // Ponto focal da linha detectada
@@ -225,7 +265,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     const scaleX = w / camW;
     const lineWidthPx = 20 * scaleX;
-    const posX = linePos * scaleX;
+
+    const shouldInvert = chkInvertOverlay ? chkInvertOverlay.checked : true;
+    const effectivePos = shouldInvert ? (camW - linePos) : linePos;
+    const posX = effectivePos * scaleX;
 
     // Desenhar pista simulada
     ctxScanline.fillStyle = '#1e293b';
@@ -253,7 +296,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const h = errorCanvas.height;
     ctxError.clearRect(0, 0, w, h);
 
-    // Grid Central (Erro Zero)
     const centerY = h / 2;
     ctxError.strokeStyle = 'rgba(255, 255, 255, 0.1)';
     ctxError.beginPath();
@@ -261,7 +303,6 @@ document.addEventListener('DOMContentLoaded', () => {
     ctxError.lineTo(w, centerY);
     ctxError.stroke();
 
-    // Desenhar curva do erro
     ctxError.strokeStyle = '#00f2fe';
     ctxError.lineWidth = 2;
     ctxError.beginPath();
@@ -269,7 +310,6 @@ document.addEventListener('DOMContentLoaded', () => {
     const stepX = w / (errorHistory.length - 1);
     for (let i = 0; i < errorHistory.length; i++) {
       const x = i * stepX;
-      // Normalizar erro (-160 a +160) para altura da tela
       const normErr = errorHistory[i] / 160;
       const y = centerY + normErr * (h / 2 - 10);
 
@@ -282,6 +322,10 @@ document.addEventListener('DOMContentLoaded', () => {
   // Alternar Modo de Operação (AUTO / MANUAL)
   function setMode(mode) {
     currentMode = mode;
+    activeKeys.clear();
+    lastSentThrottle = null;
+    lastSentSteer = null;
+
     if (mode === 'AUTO') {
       btnModeAuto.classList.add('active');
       btnModeManual.classList.remove('active');
@@ -297,49 +341,122 @@ document.addEventListener('DOMContentLoaded', () => {
     }
     if (window.lucide) lucide.createIcons();
 
-    // Enviar comando ao ESP32
     fetch(`http://${espIp}/api/mode?val=${mode}`).catch(() => { });
   }
 
   btnModeAuto.addEventListener('click', () => setMode('AUTO'));
   btnModeManual.addEventListener('click', () => setMode('MANUAL'));
 
-  // Controle Manual (D-Pad & Teclado)
-  function sendControl(dir) {
+  // Controle Manual Inteligente (Estilo Jogos de Corrida + Anti-Flooding HTTP)
+  function updateManualControl(force = false) {
     if (currentMode !== 'MANUAL') return;
+
+    let throttle = 'STOP';
+    if (activeKeys.has('w') || activeKeys.has('arrowup')) {
+      throttle = 'FORWARD';
+    } else if (activeKeys.has('s') || activeKeys.has('arrowdown')) {
+      throttle = 'BACKWARD';
+    }
+
+    let steer = 'CENTER';
+    if (activeKeys.has('a') || activeKeys.has('arrowleft')) {
+      steer = 'LEFT';
+    } else if (activeKeys.has('d') || activeKeys.has('arrowright')) {
+      steer = 'RIGHT';
+    }
+
+    // Se o estado não alterou e não é envio forçado, evita disparar HTTP request desnecessária
+    if (!force && throttle === lastSentThrottle && steer === lastSentSteer) {
+      return;
+    }
+
+    lastSentThrottle = throttle;
+    lastSentSteer = steer;
+
     const speed = rngSpeed.value;
-    fetch(`http://${espIp}/api/control?dir=${dir}&speed=${speed}`).catch(() => { });
+    const url = `http://${espIp}/api/control?dir=${throttle}&steer=${steer}&speed=${speed}`;
+    fetch(url).catch(() => { });
   }
 
-  document.querySelectorAll('.dpad-btn').forEach(btn => {
-    btn.addEventListener('mousedown', () => sendControl(btn.dataset.dir));
-    btn.addEventListener('mouseup', () => sendControl('STOP'));
-    btn.addEventListener('touchstart', (e) => { e.preventDefault(); sendControl(btn.dataset.dir); });
-    btn.addEventListener('touchend', () => sendControl('STOP'));
-  });
-
-  // Atalhos de Teclado (WASD / Setas)
+  // Eventos do Teclado (Filtra e.repeat para evitar queda do Wi-Fi)
   window.addEventListener('keydown', (e) => {
     if (currentMode !== 'MANUAL') return;
+    if (e.repeat) return; // Evita envio contínuo por repetição automática do SO
+
     const key = e.key.toLowerCase();
-    if (key === 'w' || key === 'arrowup') sendControl('FORWARD');
-    else if (key === 's' || key === 'arrowdown') sendControl('BACKWARD');
-    else if (key === 'a' || key === 'arrowleft') sendControl('LEFT');
-    else if (key === 'd' || key === 'arrowright') sendControl('RIGHT');
-    else if (key === ' ') sendControl('STOP');
+    if (['w', 's', 'a', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(key)) {
+      e.preventDefault();
+      if (key === ' ') {
+        activeKeys.clear();
+      } else {
+        activeKeys.add(key);
+      }
+      updateManualControl();
+    }
   });
 
   window.addEventListener('keyup', (e) => {
     if (currentMode !== 'MANUAL') return;
-    sendControl('STOP');
+
+    const key = e.key.toLowerCase();
+    if (['w', 's', 'a', 'd', 'arrowup', 'arrowdown', 'arrowleft', 'arrowright'].includes(key)) {
+      activeKeys.delete(key);
+      updateManualControl();
+    }
+  });
+
+  // Botões do D-Pad (Clique e Toque em Telas Touch)
+  document.querySelectorAll('.dpad-btn').forEach(btn => {
+    const dir = btn.dataset.dir;
+
+    const handlePress = (e) => {
+      e.preventDefault();
+      if (currentMode !== 'MANUAL') return;
+
+      if (dir === 'FORWARD') activeKeys.add('w');
+      else if (dir === 'BACKWARD') activeKeys.add('s');
+      else if (dir === 'LEFT') activeKeys.add('a');
+      else if (dir === 'RIGHT') activeKeys.add('d');
+      else if (dir === 'STOP') activeKeys.clear();
+
+      updateManualControl();
+    };
+
+    const handleRelease = (e) => {
+      if (currentMode !== 'MANUAL') return;
+
+      if (dir === 'FORWARD') activeKeys.delete('w');
+      else if (dir === 'BACKWARD') activeKeys.delete('s');
+      else if (dir === 'LEFT') activeKeys.delete('a');
+      else if (dir === 'RIGHT') activeKeys.delete('d');
+      else if (dir === 'STOP') activeKeys.clear();
+
+      updateManualControl();
+    };
+
+    btn.addEventListener('mousedown', handlePress);
+    btn.addEventListener('mouseup', handleRelease);
+    btn.addEventListener('mouseleave', handleRelease);
+
+    btn.addEventListener('touchstart', handlePress);
+    btn.addEventListener('touchend', handleRelease);
+    btn.addEventListener('touchcancel', handleRelease);
   });
 
   // Sliders e Parâmetros
-  rngSpeed.addEventListener('input', () => lblSpeed.textContent = rngSpeed.value);
+  rngSpeed.addEventListener('input', () => {
+    lblSpeed.textContent = rngSpeed.value;
+    updateManualControl(true);
+  });
   rngThresh.addEventListener('input', () => lblThresh.textContent = rngThresh.value);
   chkDarkLine.addEventListener('change', () => {
     lblLineType.textContent = chkDarkLine.checked ? 'Linha Preta (Fundo Claro)' : 'Linha Clara (Fundo Escuro)';
   });
+  if (chkInvertOverlay) {
+    chkInvertOverlay.addEventListener('change', () => {
+      lblInvertOverlay.textContent = chkInvertOverlay.checked ? 'Linha Invertida (Alinhada)' : 'Linha Normal (Direta)';
+    });
+  }
 
   rngKp.addEventListener('input', () => lblKp.textContent = parseFloat(rngKp.value).toFixed(2));
   rngKi.addEventListener('input', () => lblKi.textContent = parseFloat(rngKi.value).toFixed(2));

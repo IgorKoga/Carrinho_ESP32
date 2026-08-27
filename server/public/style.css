@@ -267,6 +267,41 @@ body {
   gap: 6px;
 }
 
+.header-actions {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.btn-flash {
+  font-family: inherit;
+  font-size: 0.85rem;
+  font-weight: 600;
+  border: 1px solid rgba(255, 204, 0, 0.3);
+  background: rgba(255, 204, 0, 0.1);
+  color: #ffcc00;
+  padding: 4px 12px;
+  border-radius: 12px;
+  cursor: pointer;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  transition: var(--transition);
+}
+
+.btn-flash:hover {
+  background: rgba(255, 204, 0, 0.25);
+  border-color: #ffcc00;
+  box-shadow: 0 0 12px rgba(255, 204, 0, 0.4);
+}
+
+.btn-flash.active {
+  background: #ffcc00;
+  color: #000;
+  border-color: #ffcc00;
+  box-shadow: 0 0 16px rgba(255, 204, 0, 0.8);
+}
+
 /* Vídeo & Visão Computacional */
 .video-container {
   position: relative;
