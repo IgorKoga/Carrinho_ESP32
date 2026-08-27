@@ -10,22 +10,48 @@ Este repositório contém o código-fonte completo (Firmware Arduino IDE, Servid
 - **🎮 Modo Manual**: Opção na interface web para assumir o controle do carrinho em tempo real via joystick virtual na tela ou teclas do teclado (`W`, `A`, `S`, `D` / Setas).
 - **📺 Stream de Vídeo & Visão Computacional**: Transmissão MJPEG em tempo real com overlay no navegador indicando a linha detectada, ponto focal de tomada de decisão e vetor de desvio.
 - **⚙️ Ajuste Fino ao Vivo**: Modifique os parâmetros de ganho PID ($K_p, K_i, K_d$), velocidade máxima (PWM) e limiar de binarização de imagem (*Threshold*) diretamente pelo painel web, sem necessidade de rebinarizar ou regravar o código.
+- **💡 Controle de Iluminação (Flash LED)**: Acionamento remoto do LED Flash de alta intensidade (GPIO 4) para testes em ambientes escuros.
 
 ---
 
-## 🔌 Esquema de Pinagem (ESP32-CAM + Ponte H L298N)
+## 📡 Arquitetura de Comunicação e Protocolo de Rede (TCP)
 
-### 1. Motores (Ponte H L298N)
+Toda a comunicação entre o carrinho ESP32-CAM e a interface web/servidor utiliza o protocolo **TCP (Transmission Control Protocol)** nas portas **80** (API HTTP REST) e **81** (Stream de Vídeo MJPEG).
+
+### Por que o protocolo TCP é utilizado?
+
+1. **Garantia de Entrega e Confiabilidade dos Comandos de Controle (Porta 80)**:
+   - Os comandos enviados para o carrinho (como iniciar tração, ajustar esterçamento do servo, alternar para modo autônomo, ativar o flash e paradas de emergência) trafegam via requisições HTTP REST.
+   - O **TCP** garante a entrega orientada a conexão, sem perda de pacotes, sem duplicação e na ordem exata em que foram enviados. Em um sistema de robótica, perder um pacote de parada (`STOP`) via UDP não confiável poderia causar colisões do carrinho.
+
+2. **Integridade da Transmissão de Vídeo MJPEG (Porta 81)**:
+   - O feed da câmera é transmitido como um fluxo contínuo HTTP *Multipart* (`multipart/x-mixed-replace`), onde cada quadro de imagem JPEG é enviado sequencialmente.
+   - O TCP assegura que o fluxo de bytes da imagem chegue intacto ao navegador. Caso um segmento de dados da imagem fosse perdido (o que aconteceria no UDP sem tratamento), a imagem JPEG apresentaria artefatos visuais ou falha de decodificação no navegador.
+
+3. **Compatibilidade Nativa com Navegadores Web**:
+   - As APIs Web e os elementos HTML5 (como `<img>` para streams MJPEG e `fetch`/`XMLHttpRequest` para APIs REST) rodam nativamente sobre TCP via HTTP, eliminando a necessidade de protocolos proprietários ou adaptadores no cliente.
+
+---
+
+## 🔌 Esquema de Pinagem (ESP32-CAM + Ponte H L298N + Servomotor)
+
+### 1. Motores de Tração (Ponte H L298N)
 | Pino L298N | Pino ESP32-CAM | Função |
 | :--- | :--- | :--- |
-| **IN1** | **GPIO 12** | Motor Esquerdo - Direção A / PWM |
-| **IN2** | **GPIO 13** | Motor Esquerdo - Direção B / PWM |
-| **IN3** | **GPIO 14** | Motor Direito - Direção A / PWM |
-| **IN4** | **GPIO 15** | Motor Direito - Direção B / PWM |
+| **IN1** | **GPIO 14** | Motor Esquerdo - Direção A (PWM Canal 1) |
+| **IN2** | **GPIO 15** | Motor Esquerdo - Direção B (PWM Canal 2) |
+| **IN3** | **GPIO 13** | Motor Direito - Direção A (PWM Canal 3) |
+| **IN4** | **GPIO 12** | Motor Direito - Direção B (PWM Canal 4) |
 | **GND** | **GND** | Terra Comum (ESP32 + Bateria + L298N) |
-| **VCC (5V)** | **5V** | Alimentação do ESP32-CAM |
+| **VCC (5V)** | **5V / VCC** | Alimentação do ESP32-CAM |
 
-*Nota: Jumper ENA e ENB da ponte H L298N mantidos conectados (High), pois o controle de velocidade via PWM é realizado diretamente nos pinos IN1..IN4 pelo canal LEDC do ESP32.*
+### 2. Servomotor de Direção & Periféricos
+| Periférico | Pino ESP32-CAM | Função |
+| :--- | :--- | :--- |
+| **Servo Sinal** | **GPIO 2** | Controle do ângulo de esterçamento (PWM Canal 5 / 50Hz) |
+| **Flash LED** | **GPIO 4** | Iluminação auxiliar da câmera |
+
+*Nota: Os jumpers ENA e ENB da ponte H L298N são mantidos conectados (High), pois o controle de velocidade via PWM é realizado diretamente nos pinos IN1..IN4 pelos canais LEDC do ESP32.*
 
 ---
 

@@ -1,16 +1,17 @@
 /*
- * ESP32-CAM Carrinho Seguidor de Linha Autônomo com Web Server & Interface Stream
- * 
+ * ESP32-CAM Carrinho Seguidor de Linha Autônomo com Web Server & Interface
+ * Stream
+ *
  * Hardware:
  * - ESP32-CAM (Módulo AI-Thinker + OV2640)
  * - Driver Ponte H L298N
- * 
+ *
  * Pinagem L298N -> ESP32-CAM:
  * - IN1 -> GPIO 12 (Motor Esquerdo A)
  * - IN2 -> GPIO 13 (Motor Esquerdo B)
  * - IN3 -> GPIO 14 (Motor Direito A)
  * - IN4 -> GPIO 15 (Motor Direito B)
- * 
+ *
  * Observação no Arduino IDE:
  * 1. Selecionar Placa: "AI Thinker ESP32-CAM"
  * 2. Partition Scheme: "Huge APP (3MB No OTA/1MB SPIFFS)"
@@ -18,11 +19,11 @@
  */
 
 #include "esp_camera.h"
-#include <WiFi.h>
+#include <ArduinoJson.h>
 #include <WebServer.h>
+#include <WiFi.h>
 #include <esp_timer.h>
 #include <img_converters.h>
-#include <ArduinoJson.h>
 
 // ==========================================
 // CONFIGURAÇÃO DE REDE WI-FI
@@ -32,61 +33,65 @@
 // false = ESP32 conecta a um Roteador existente (Station)
 const bool USE_ACCESS_POINT = true;
 
-const char* ssid     = "ESP32_Carrinho_Robo";
-const char* password = "password123";
+const char *ssid = "ESP32_Carrinho_Robo";
+const char *password = "password123";
 
 // ==========================================
 // CONFIGURAÇÃO DOS PINOS DA CÂMERA (AI-THINKER)
 // ==========================================
-#define PWDN_GPIO_NUM     32
-#define RESET_GPIO_NUM    -1
-#define XCLK_GPIO_NUM      0
-#define SIOD_GPIO_NUM     26
-#define SIOC_GPIO_NUM     27
-#define Y9_GPIO_NUM       35
-#define Y8_GPIO_NUM       34
-#define Y7_GPIO_NUM       39
-#define Y6_GPIO_NUM       36
-#define Y5_GPIO_NUM       21
-#define Y4_GPIO_NUM       19
-#define Y3_GPIO_NUM       18
-#define Y2_GPIO_NUM        5
-#define VSYNC_GPIO_NUM    25
-#define HREF_GPIO_NUM     23
-#define PCLK_GPIO_NUM     22
-#define FLASH_GPIO_NUM     4
+#define PWDN_GPIO_NUM 32
+#define RESET_GPIO_NUM -1
+#define XCLK_GPIO_NUM 0
+#define SIOD_GPIO_NUM 26
+#define SIOC_GPIO_NUM 27
+#define Y9_GPIO_NUM 35
+#define Y8_GPIO_NUM 34
+#define Y7_GPIO_NUM 39
+#define Y6_GPIO_NUM 36
+#define Y5_GPIO_NUM 21
+#define Y4_GPIO_NUM 19
+#define Y3_GPIO_NUM 18
+#define Y2_GPIO_NUM 5
+#define VSYNC_GPIO_NUM 25
+#define HREF_GPIO_NUM 23
+#define PCLK_GPIO_NUM 22
+#define FLASH_GPIO_NUM 4
 
 // ==========================================
 // CONFIGURAÇÃO DOS PINOS DA PONTE H & SERVO (Fiação Real)
 // ==========================================
-#define MOTOR_IN1   14 // IO14 -> IN1
-#define MOTOR_IN2   15 // IO15 -> IN2
-#define MOTOR_IN3   13 // IO13 -> IN3
-#define MOTOR_IN4   12 // IO12 -> IN4
+#define MOTOR_IN1 14 // IO14 -> IN1
+#define MOTOR_IN2 15 // IO15 -> IN2
+#define MOTOR_IN3 13 // IO13 -> IN3
+#define MOTOR_IN4 12 // IO12 -> IN4
 
 // Pino de Sinal do Servomotor de Direção
-#define SERVO_PIN   2
+#define SERVO_PIN 2
 
-// Canais PWM LEDC do ESP32
-#define PWM_CHAN_IN1    0
-#define PWM_CHAN_IN2    1
-#define PWM_CHAN_IN3    2
-#define PWM_CHAN_IN4    3
-#define PWM_CHAN_SERVO  4
+// Canais PWM LEDC do ESP32 (Canal 0 é reservado para a Câmera XCLK)
+#define PWM_CHAN_IN1 1
+#define PWM_CHAN_IN2 2
+#define PWM_CHAN_IN3 3
+#define PWM_CHAN_IN4 4
+#define PWM_CHAN_SERVO 5
 
-#define PWM_FREQ        5000
-#define PWM_RES         8 // Resolution 0-255
+#define PWM_FREQ 5000
+#define PWM_RES 8 // Resolution 0-255
 
-#define SERVO_FREQ      50   // Frequência padrão de Servo (50Hz)
-#define SERVO_RES       14   // Resolução 14 bits (0-16383) para controle suave
+#define SERVO_FREQ 50 // Frequência padrão de Servo (50Hz)
+#define SERVO_RES 14  // Resolução 14 bits (0-16383) para controle suave
 
 // Compatibilidade entre ESP32 Arduino Core 2.x e 3.x (LEDC API)
 #if defined(ESP_ARDUINO_VERSION_MAJOR) && ESP_ARDUINO_VERSION_MAJOR >= 3
-  #define PWM_ATTACH(pin, freq, res, chan) ledcAttach(pin, freq, res)
-  #define PWM_WRITE(pin, chan, duty)       ledcWrite(pin, duty)
+#define PWM_ATTACH(pin, freq, res, chan) ledcAttach(pin, freq, res)
+#define PWM_WRITE(pin, chan, duty) ledcWrite(pin, duty)
 #else
-  #define PWM_ATTACH(pin, freq, res, chan) do { ledcSetup(chan, freq, res); ledcAttachPin(pin, chan); } while(0)
-  #define PWM_WRITE(pin, chan, duty)       ledcWrite(chan, duty)
+#define PWM_ATTACH(pin, freq, res, chan)                                       \
+  do {                                                                         \
+    ledcSetup(chan, freq, res);                                                \
+    ledcAttachPin(pin, chan);                                                  \
+  } while (0)
+#define PWM_WRITE(pin, chan, duty) ledcWrite(chan, duty)
 #endif
 
 // ==========================================
@@ -95,17 +100,19 @@ const char* password = "password123";
 enum Mode { MODE_MANUAL, MODE_AUTO };
 Mode currentMode = MODE_AUTO;
 
+bool flashState = false; // Estado do Flash LED (GPIO 4)
+
 // Parâmetros de Velocidade de Tração (0 - 255)
 int baseSpeed = 160;
-int maxSpeed  = 255;
-int minSpeed  = 0;
+int maxSpeed = 255;
+int minSpeed = 0;
 int currentDriveSpeed = 0;
 
 // Parâmetros do Servomotor de Direção (Ângulos em Graus)
 int currentServoAngle = 90;
-int servoCenterAngle  = 90;  // Posição central / reto (90°)
-int servoMinAngle     = 45;  // Limite máximo de curva à esquerda (graus)
-int servoMaxAngle     = 135; // Limite máximo de curva à direita (graus)
+int servoCenterAngle = 90; // Posição central / reto (90°)
+int servoMinAngle = 45;    // Limite máximo de curva à direita (graus)
+int servoMaxAngle = 135;   // Limite máximo de curva à esquerda (graus)
 
 // Parâmetros PID para o Seguidor de Linha (Ajusta o Ângulo do Servo)
 float Kp = 0.50;
@@ -113,15 +120,16 @@ float Ki = 0.00;
 float Kd = 0.20;
 
 float errorPrev = 0;
-float integral  = 0;
+float integral = 0;
 
 // Processamento de Imagem (Resolução QQVGA 160x120 para FPS máximo)
-int thresholdVal = 100;      // Limiar para binarização (0-255)
-bool isDarkLine  = true;     // true = linha preta em fundo claro, false = linha clara em fundo escuro
-int scanRowY     = 90;       // Linha Y de varredura (da imagem de 120px de altura)
-int lineCenterPos = 80;      // Posição encontrada da linha (largura 160px)
+int thresholdVal = 100; // Limiar para binarização (0-255)
+bool isDarkLine = true; // true = linha preta em fundo claro, false = linha
+                        // clara em fundo escuro
+int scanRowY = 90;      // Linha Y de varredura (da imagem de 120px de altura)
+int lineCenterPos = 80; // Posição encontrada da linha (largura 160px)
 bool lineDetected = false;
-int lastError     = 0;
+int lastError = 0;
 
 // Telemetria e FPS
 float fps = 0.0;
@@ -138,7 +146,7 @@ void setupMotors();
 void setupServo();
 void setServoAngle(int angle);
 void setDriveSpeed(int speed);
-void processLineFollowing(uint8_t* buf, int width, int height);
+void processLineFollowing(uint8_t *buf, int width, int height);
 void handleStream();
 
 // ==========================================
@@ -150,7 +158,7 @@ void setup() {
   Serial.println("\n--- INICIALIZANDO CARRINHO ESP32-CAM ---");
 
   pinMode(FLASH_GPIO_NUM, OUTPUT);
-  digitalWrite(FLASH_GPIO_NUM, LOW); // Flash desligado
+  digitalWrite(FLASH_GPIO_NUM, LOW); // Flash desligado inicial
 
   setupMotors();
   setupServo();
@@ -173,71 +181,119 @@ void setup() {
     Serial.println(WiFi.localIP());
   }
 
+  // Desativar economia de energia do Wi-Fi para evitar desconexões por latência
+  WiFi.setSleep(false);
+
   // Rotas HTTP da API REST
   server.on("/", HTTP_GET, []() {
-    server.send(200, "text/html", "<h1>ESP32-CAM Carrinho com Servomotor Ativo!</h1><p>Acesse o servidor web frontend para controlar.</p>");
+    server.send(200, "text/html",
+                "<h1>ESP32-CAM Carrinho com Servomotor Ativo!</h1><p>Acesse o "
+                "servidor web frontend para controlar.</p>");
   });
 
   // Alterar Modo (AUTO / MANUAL)
   server.on("/api/mode", HTTP_GET, []() {
     if (server.hasArg("val")) {
       String m = server.arg("val");
-      if (m == "AUTO") currentMode = MODE_AUTO;
+      if (m == "AUTO")
+        currentMode = MODE_AUTO;
       else if (m == "MANUAL") {
         currentMode = MODE_MANUAL;
         setDriveSpeed(0);
         setServoAngle(servoCenterAngle);
       }
     }
-    server.send(200, "application/json", "{\"mode\":\"" + String(currentMode == MODE_AUTO ? "AUTO" : "MANUAL") + "\"}");
+    server.send(200, "application/json",
+                "{\"mode\":\"" +
+                    String(currentMode == MODE_AUTO ? "AUTO" : "MANUAL") +
+                    "\"}");
   });
 
-  // Controle Manual (FORWARD, BACKWARD, LEFT, RIGHT, STOP)
+  // Controle Manual (dir=FORWARD/BACKWARD/STOP, steer=LEFT/RIGHT/CENTER)
   server.on("/api/control", HTTP_GET, []() {
-    if (currentMode == MODE_MANUAL && server.hasArg("dir")) {
-      String dir = server.arg("dir");
+    if (currentMode == MODE_MANUAL) {
       int spd = baseSpeed;
-      if (server.hasArg("speed")) spd = server.arg("speed").toInt();
+      if (server.hasArg("speed"))
+        spd = server.arg("speed").toInt();
 
-      if (dir == "FORWARD") {
-        setDriveSpeed(spd);
-        setServoAngle(servoCenterAngle);
-      } else if (dir == "BACKWARD") {
-        setDriveSpeed(-spd);
-        setServoAngle(servoCenterAngle);
-      } else if (dir == "LEFT") {
-        setDriveSpeed(spd);
-        setServoAngle(servoMinAngle);
-      } else if (dir == "RIGHT") {
-        setDriveSpeed(spd);
-        setServoAngle(servoMaxAngle);
-      } else {
-        setDriveSpeed(0);
+      // Controle de Tração (Acelerador e Ré)
+      if (server.hasArg("dir")) {
+        String dir = server.arg("dir");
+        if (dir == "FORWARD") {
+          setDriveSpeed(spd);
+        } else if (dir == "BACKWARD") {
+          setDriveSpeed(-spd);
+        } else if (dir == "STOP") {
+          setDriveSpeed(0);
+        } else if (dir == "LEFT") {
+          setServoAngle(servoMaxAngle);
+        } else if (dir == "RIGHT") {
+          setServoAngle(servoMinAngle);
+        }
+      }
+
+      // Controle de Esterçamento (Rodas Dianteiras)
+      if (server.hasArg("steer")) {
+        String steer = server.arg("steer");
+        if (steer == "LEFT") {
+          setServoAngle(servoMaxAngle); // Esquerda = 135° (Invertido)
+        } else if (steer == "RIGHT") {
+          setServoAngle(servoMinAngle); // Direita = 45° (Invertido)
+        } else if (steer == "CENTER") {
+          setServoAngle(servoCenterAngle); // Centro = 90°
+        }
       }
     }
-    server.send(200, "application/json", "{\"status\":\"ok\"}");
+    server.send(
+        200, "application/json",
+        "{\"status\":\"ok\",\"driveSpeed\":" + String(currentDriveSpeed) +
+            ",\"servoAngle\":" + String(currentServoAngle) + "}");
   });
 
-  // Endpoint direto para controlar o Ângulo do Servomotor (ex: /api/servo?angle=90)
+  // Controle do LED Flash (GPIO 4)
+  server.on("/api/flash", HTTP_GET, []() {
+    if (server.hasArg("val")) {
+      String val = server.arg("val");
+      flashState = (val == "1" || val == "true" || val == "ON" || val == "on");
+    } else if (server.hasArg("toggle")) {
+      flashState = !flashState;
+    }
+    digitalWrite(FLASH_GPIO_NUM, flashState ? HIGH : LOW);
+    server.send(200, "application/json",
+                "{\"flash\":" + String(flashState ? "true" : "false") + "}");
+  });
+
+  // Endpoint direto para controlar o Ângulo do Servomotor (ex:
+  // /api/servo?angle=90)
   server.on("/api/servo", HTTP_GET, []() {
     if (server.hasArg("angle")) {
       int angle = server.arg("angle").toInt();
       setServoAngle(angle);
     }
-    server.send(200, "application/json", "{\"servoAngle\":" + String(currentServoAngle) + "}");
+    server.send(200, "application/json",
+                "{\"servoAngle\":" + String(currentServoAngle) + "}");
   });
 
   // Configuração dos Parâmetros PID, Threshold e Limites do Servo
   server.on("/api/settings", HTTP_GET, []() {
-    if (server.hasArg("kp")) Kp = server.arg("kp").toFloat();
-    if (server.hasArg("ki")) Ki = server.arg("ki").toFloat();
-    if (server.hasArg("kd")) Kd = server.arg("kd").toFloat();
-    if (server.hasArg("speed")) baseSpeed = server.arg("speed").toInt();
-    if (server.hasArg("thresh")) thresholdVal = server.arg("thresh").toInt();
-    if (server.hasArg("dark")) isDarkLine = (server.arg("dark") == "true" || server.arg("dark") == "1");
-    if (server.hasArg("servoCenter")) servoCenterAngle = server.arg("servoCenter").toInt();
-    if (server.hasArg("servoMin")) servoMinAngle = server.arg("servoMin").toInt();
-    if (server.hasArg("servoMax")) servoMaxAngle = server.arg("servoMax").toInt();
+    if (server.hasArg("kp"))
+      Kp = server.arg("kp").toFloat();
+    if (server.hasArg("ki"))
+      Ki = server.arg("ki").toFloat();
+    if (server.hasArg("kd"))
+      Kd = server.arg("kd").toFloat();
+    if (server.hasArg("speed"))
+      baseSpeed = server.arg("speed").toInt();
+    if (server.hasArg("thresh"))
+      thresholdVal = server.arg("thresh").toInt();
+    if (server.hasArg("dark"))
+      isDarkLine = (server.arg("dark") == "true" || server.arg("dark") == "1");
+    if (server.hasArg("servoCenter"))
+      servoCenterAngle = server.arg("servoCenter").toInt();
+    if (server.hasArg("servoMin"))
+      servoMinAngle = server.arg("servoMin").toInt();
+    if (server.hasArg("servoMax"))
+      servoMaxAngle = server.arg("servoMax").toInt();
 
     server.send(200, "application/json", "{\"status\":\"updated\"}");
   });
@@ -245,7 +301,9 @@ void setup() {
   // Endpoint de Telemetria
   server.on("/api/telemetry", HTTP_GET, []() {
     String json = "{";
-    json += "\"mode\":\"" + String(currentMode == MODE_AUTO ? "AUTO" : "MANUAL") + "\",";
+    json += "\"mode\":\"" +
+            String(currentMode == MODE_AUTO ? "AUTO" : "MANUAL") + "\",";
+    json += "\"flash\":" + String(flashState ? "true" : "false") + ",";
     json += "\"fps\":" + String(fps, 1) + ",";
     json += "\"error\":" + String(lastError) + ",";
     json += "\"linePos\":" + String(lineCenterPos) + ",";
@@ -284,7 +342,18 @@ void loop() {
 // CONFIGURAÇÃO DOS MOTORES E SERVO
 // ==========================================
 void setupMotors() {
-  // Configuração dos canais/pinos PWM LEDC para os motores de tração da ponte H L298N (IO14, IO15, IO13, IO12)
+  // Inicialização explícita dos pinos de saída para a ponte H L298N (IO14,
+  // IO15, IO13, IO12)
+  pinMode(MOTOR_IN1, OUTPUT);
+  pinMode(MOTOR_IN2, OUTPUT);
+  pinMode(MOTOR_IN3, OUTPUT);
+  pinMode(MOTOR_IN4, OUTPUT);
+  digitalWrite(MOTOR_IN1, LOW);
+  digitalWrite(MOTOR_IN2, LOW);
+  digitalWrite(MOTOR_IN3, LOW);
+  digitalWrite(MOTOR_IN4, LOW);
+
+  // Configuração dos canais PWM LEDC (Canais 1 a 4)
   PWM_ATTACH(MOTOR_IN1, PWM_FREQ, PWM_RES, PWM_CHAN_IN1);
   PWM_ATTACH(MOTOR_IN2, PWM_FREQ, PWM_RES, PWM_CHAN_IN2);
   PWM_ATTACH(MOTOR_IN3, PWM_FREQ, PWM_RES, PWM_CHAN_IN3);
@@ -360,9 +429,11 @@ void startCamera() {
   config.xclk_freq_hz = 20000000;
   config.pixel_format = PIXFORMAT_JPEG;
 
-  // Resolução QQVGA (160x120) para máxima taxa de quadros (FPS ~30) e processamento ultra-rápido
+  // Resolução QQVGA (160x120) para máxima taxa de quadros (FPS ~30) e
+  // processamento ultra-rápido
   config.frame_size = FRAMESIZE_QQVGA;
-  config.jpeg_quality = 15; // 0-63 (15 otimiza o payload de transmissão e aumenta a fluidez)
+  config.jpeg_quality =
+      15; // 0-63 (15 otimiza o payload de transmissão e aumenta a fluidez)
   config.fb_count = 2;
 
   esp_err_t err = esp_camera_init(&config);
@@ -371,10 +442,11 @@ void startCamera() {
     return;
   }
 
-  sensor_t * s = esp_camera_sensor_get();
+  sensor_t *s = esp_camera_sensor_get();
   s->set_vflip(s, 0); // Inverter verticalmente (0 = Normal, 1 = Invertido)
   s->set_hmirror(s, 1);
-  Serial.println("Câmera OV2640 Inicializada com Sucesso (QQVGA - Alta Performance)!");
+  Serial.println(
+      "Câmera OV2640 Inicializada com Sucesso (QQVGA - Alta Performance)!");
 }
 
 // ==========================================
@@ -382,7 +454,8 @@ void startCamera() {
 // ==========================================
 void handleStream() {
   WiFiClient client = streamServer.available();
-  if (!client) return;
+  if (!client)
+    return;
 
   client.println("HTTP/1.1 200 OK");
   client.println("Access-Control-Allow-Origin: *");
@@ -390,7 +463,7 @@ void handleStream() {
   client.println();
 
   while (client.connected()) {
-    camera_fb_t * fb = esp_camera_fb_get();
+    camera_fb_t *fb = esp_camera_fb_get();
     if (!fb) {
       Serial.println("Falha na captura do Frame Buffer");
       break;
@@ -400,7 +473,7 @@ void handleStream() {
     // Alocação dinâmica com base na dimensão real do frame (QQVGA 160x120)
     int frameW = fb->width;
     int frameH = fb->height;
-    uint8_t * rgb_buf = (uint8_t *)malloc(frameW * frameH * 3);
+    uint8_t *rgb_buf = (uint8_t *)malloc(frameW * frameH * 3);
     if (rgb_buf != NULL) {
       if (fmt2rgb888(fb->buf, fb->len, fb->format, rgb_buf)) {
         processLineFollowing(rgb_buf, frameW, frameH);
@@ -432,7 +505,7 @@ void handleStream() {
 // ==========================================
 // ALGORITMO SEGUIDOR DE LINHA (VISÃO COMPUTACIONAL & PID)
 // ==========================================
-void processLineFollowing(uint8_t* rgb_buf, int width, int height) {
+void processLineFollowing(uint8_t *rgb_buf, int width, int height) {
   // Amostramos uma faixa horizontal da imagem (scanline Y)
   int rowY = constrain(scanRowY, 0, height - 1);
   long weightedSum = 0;
@@ -461,7 +534,8 @@ void processLineFollowing(uint8_t* rgb_buf, int width, int height) {
     lineCenterPos = weightedSum / sumPixels;
   } else {
     lineDetected = false;
-    // Se a linha for perdida, mantemos a última direção conhecida com curva acentuada
+    // Se a linha for perdida, mantemos a última direção conhecida com curva
+    // acentuada
   }
 
   // Cálculo do Erro de Desvio (-80 a +80 no QQVGA)
@@ -473,8 +547,10 @@ void processLineFollowing(uint8_t* rgb_buf, int width, int height) {
   if (currentMode == MODE_AUTO) {
     if (!lineDetected) {
       // Procura a linha esterçando para o último sentido conhecido
-      if (errorPrev > 0) setServoAngle(servoMaxAngle);
-      else setServoAngle(servoMinAngle);
+      if (errorPrev > 0)
+        setServoAngle(servoMaxAngle);
+      else
+        setServoAngle(servoMinAngle);
       setDriveSpeed(baseSpeed);
       return;
     }
@@ -488,7 +564,8 @@ void processLineFollowing(uint8_t* rgb_buf, int width, int height) {
 
     float steering = (Kp * P) + (Ki * integral) + (Kd * D);
 
-    // O PID ajusta o ângulo em torno da posição central do servo (servoCenterAngle = 90°)
+    // O PID ajusta o ângulo em torno da posição central do servo
+    // (servoCenterAngle = 90°)
     int targetServoAngle = servoCenterAngle + (int)steering;
     setServoAngle(targetServoAngle);
 
