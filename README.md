@@ -1,14 +1,15 @@
-# 🏎️ Carrinho Seguidor de Linha Autônomo com ESP32-CAM
+# 🏎️ Carrinho Seguidor de Linha Autônomo com ESP32-CAM (Multi-Zona & Curvas Preditivas)
 
-Firmware completo de alta performance para robô seguidor de linha autônomo com processamento 100% embarcado no módulo **ESP32-CAM (AI-Thinker OV2640)**, arquitetura dual-core com **FreeRTOS**, controle **PD**, servidor HTTP nativo (`esp_http_server.h`), streaming **MJPEG** em tempo real e **Painel Web Dark Theme 100% Offline**.
+Firmware completo de alta performance para robô seguidor de linha autônomo com processamento 100% embarcado no módulo **ESP32-CAM (AI-Thinker OV2640)**, arquitetura dual-core com **FreeRTOS**, visão computacional **Multi-ROI (3 Níveis de Profundidade: Base, Meio e Longe)**, identificação preditiva de **Curvas e Vetores de Trajetória**, controle **PD**, servidor HTTP nativo (`esp_http_server.h`), streaming **MJPEG** dedicado e **Painel Web Dark Theme 100% Offline**.
 
 ---
 
 ## 📋 Sumário
 - [Arquitetura Multicore (FreeRTOS)](#-arquitetura-multicore-freertos)
+- [Pipeline de Visão Computacional Multi-Zona (Tela Inteira)](#-pipeline-de-visão-computacional-multi-zona-tela-inteira)
+- [Identificação e Antecipação Preditiva de Curvas](#-identificação-e-antecipação-preditiva-de-curvas)
 - [Pinagem do Hardware](#-pinagem-do-hardware)
 - [Dashboard Web e API REST](#-dashboard-web-e-api-rest)
-- [Pipeline de Visão Computacional e Controle PD](#-pipeline-de-visão-computacional-e-controle-pd)
 - [Como Compilar e Gravar no ESP32-CAM](#-como-compilar-e-gravar-no-esp32-cam)
 - [Alimentação e Cuidados Elétricos](#-alimentação-e-cuidados-elétricos)
 
@@ -26,14 +27,56 @@ O sistema opera com separação estrita de tarefas entre os dois núcleos do ESP
  │   (Visão & Controle PD)      │    (Rede Wi-Fi & Servidor)   │
  ├──────────────────────────────┼──────────────────────────────┤
  │ • Captura QQVGA (160x120)    │ • Wi-Fi Station Hotspot      │
- │ • ROI inferior (Y: 90 a 110) │ • IP Estático 192.168.43.50  │
- │ • Binarização e Centróide Cx │ • Servidor HTTP (Porta 80)   │
- │ • Controle PD do Servo       │ • Streaming MJPEG (/stream)  │
- │ • Desaceleração em Curvas    │ • Telemetria JSON (/data)    │
- │ • Loop Estrito: ~30 ms       │ • Calibração Dinâmica (/tune)│
- │ • Failsafe de Perda de Linha │ • Comandos Tração (/cmd)     │
+ │ • Varredura Multi-Zona (3x)  │ • IP Estático 10.164.64.50   │
+ │ • Detecção Preditiva Curvas  │ • Servidor HTTP (Porta 80)   │
+ │ • Cálculo Curvatura (ΔE)     │ • Streaming MJPEG (/stream)  │
+ │ • Frenagem Antecipada        │ • Telemetria JSON (/data)    │
+ │ • Overlay Trajetória Stream  │ • Calibração Dinâmica (/tune)│
+ │ • Loop Estrito: ~30 ms       │ • Comandos Tração (/cmd)     │
  └──────────────────────────────┴──────────────────────────────┘
 ```
+
+---
+
+## 👁️ Pipeline de Visão Computacional Multi-Zona (Tela Inteira)
+
+Ao invés de ler apenas uma faixa restrita, o pipeline processa a tela inteira dividida em 3 zonas estratégicas de profundidade:
+
+```
+       ┌───────────────────────────────┐
+       │                               │  (Longe / Horizonte)
+       │    [Zona 3: Lookahead Longe]  │  --> Detecta Curva Antecipada (E_far)
+       │           \     /             │
+       │    [Zona 2: Médio Alcance]    │  --> Estabilização de Trajetória (E_mid)
+       │             | |               │
+       │    [Zona 1: Base / Perto]     │  --> Atuação Imediata do Servo (E_base)
+       │             | |               │  (Perto do Para-choque)
+       └───────────────────────────────┘
+```
+
+1. **Zona 1 (Base / Perto):** Calcula o erro lateral imediato ($E_{\text{base}}$) próximo ao para-choque.
+2. **Zona 2 (Meio / Intermediário):** Calcula a posição central da pista ($E_{\text{mid}}$) para amortecimento de oscilação.
+3. **Zona 3 (Longe / Lookahead):** Rastreia a linha à distância ($E_{\text{far}}$) para antecipar curvas antes de o carrinho entrar nelas.
+
+### Suporte a Orientação do Sensor (90° Rotacionado / Normal):
+- **Sensor 90° (Padrão Chassi):** Mapeia o eixo lateral da pista no eixo $Y$ do sensor ($0..119$) e a profundidade no eixo $X$ ($0..159$).
+- **Sensor Normal:** Mapeia lateral em $X$ ($0..159$) e profundidade em $Y$ ($0..119$).
+- Pode ser alternado dinamicamente com 1 clique no painel web.
+
+---
+
+## ⚡ Identificação e Antecipação Preditiva de Curvas
+
+- **Cálculo da Curvatura ($\Delta E$):**
+  $$\Delta E = E_{\text{far}} - E_{\text{base}}$$
+- **Classificação Automática:**
+  - $|\Delta E| < 10$: `RETA` (Aceleração máxima na velocidade base).
+  - $10 \le |\Delta E| < 24$: `CURVA SUAVE` (Correção suave e leve modulação de PWM).
+  - $|\Delta E| \ge 24$: `CURVA FECHADA` (Frenagem preditiva imediata antes de entrar na curva!).
+- **Blend de Esterçamento Composto:**
+  $$E_{\text{composto}} = (1 - w_{\text{far}}) \cdot E_{\text{base}} + w_{\text{far}} \cdot E_{\text{far}}$$
+- **Controlador PD Preditivo:**
+  $$\text{Ângulo} = 90^\circ + (K_p \cdot E_{\text{composto}}) + (K_d \cdot \Delta E_{\text{composto}})$$
 
 ---
 
@@ -60,13 +103,11 @@ O sistema opera com separação estrita de tarefas entre os dois núcleos do ESP
 | **Ponte H - IN3** | **GPIO 13** | Motor Direito - Avanço (PWM) |
 | **Ponte H - IN4** | **GPIO 12** | Motor Direito - Direção (GND/LOW) |
 
-> ⚠️ **Proteção de Boot (GPIO 12):** O código inicializa o GPIO 12 e todos os pinos de saída explicitamente em nível `LOW` logo no início de `setup()` para evitar falhas de bootstrap do ESP32 e acionamentos espúrios dos motores.
-
 ---
 
 ## 🌐 Dashboard Web e API REST
 
-A interface web é **100% offline** (armazenada na memória Flash `PROGMEM`), estilizada em **Dark Theme** moderno e totalmente responsiva para notebooks, tablets e smartphones.
+A interface web é **100% offline** (armazenada na memória Flash `PROGMEM`), estilizada em **Dark Theme** moderno e totalmente responsiva.
 
 - **SSID do Hotspot:** `Redmi Note 10S`
 - **Senha:** `monobola8`
@@ -75,33 +116,11 @@ A interface web é **100% offline** (armazenada na memória Flash `PROGMEM`), es
 - **Porta do Streaming:** `81` (`http://10.164.64.50:81/stream`)
 
 ### Rotas e Endpoints HTTP:
-1. **`GET http://10.164.64.50/`** : Painel de controle completo com:
-   - Streaming de vídeo com overlay gráfico em tempo real.
-   - Mostradores: Estado (RODANDO/PARADO), Erro da Linha, Ângulo do Servo, PWM e FPS.
-   - Botões de ação: **▶ INICIAR TRAÇÃO** e **🛑 PARAR EMERGÊNCIA**.
-   - Sliders interativos para calibração dinâmica (*on-the-fly*).
-2. **`GET http://10.164.64.50:81/stream`** : Streaming de vídeo contínuo MJPEG dedicado.
-3. **`GET http://10.164.64.50/data`** : Telemetria em tempo real no formato JSON.
-4. **`GET http://10.164.64.50/tune?kp=...&kd=...&th=...&speed=...`** : Atualiza os parâmetros de calibração em tempo de execução sem reiniciar o microcontrolador.
-5. **`GET http://10.164.64.50/cmd?action=start|stop`** : Habilita ou desabilita o acionamento dos motores traseiros.
-
----
-
-## 👁️ Pipeline de Visão Computacional e Controle PD
-
-1. **Captura:** Imagem capturada em resolução **QQVGA (160x120)** em escala de cinza de 8 bits (`PIXFORMAT_GRAYSCALE`).
-2. **ROI (Região de Interesse):** Processa exclusivamente as linhas horizontais entre $Y = 90$ e $Y = 110$.
-3. **Binarização Rápida:** Pixel com intensidade $< \text{Threshold}$ (padrão: 80) é classificado como linha preta.
-4. **Cálculo do Centróide ($X_{\text{centróide}}$):**
-   $$X_{\text{centróide}} = \frac{\sum (x \cdot I(x))}{\sum I(x)}$$
-   $$\text{Erro} = X_{\text{centróide}} - 80 \quad (\text{faixa de } -80 \text{ a } +80)$$
-5. **Controlador PD de Direção:**
-   $$\text{Ângulo} = 90^\circ + (K_p \cdot \text{Erro}) + (K_d \cdot (\text{Erro} - \text{Erro Anterior}))$$
-   Limitado rigidamente entre $50^\circ$ e $130^\circ$.
-6. **Controle Adaptativo de Velocidade:**
-   - Em retas ($|\text{Erro}| \le 35$): Opera na velocidade base (padrão PWM 150).
-   - Em curvas fechadas ($|\text{Erro}| > 35$): Redução diferencial suave proporcional à curvatura.
-7. **Failsafe (Perda de Linha):** Se nenhum pixel escuro for detectado na ROI por mais de $300\text{ ms}$, os motores são desligados imediatamente e o servo é centralizado em $90^\circ$.
+1. **`GET http://10.164.64.50/`** : Painel de controle com vídeo ao vivo, vetor de curva, status multi-zona e calibração.
+2. **`GET http://10.164.64.50:81/stream`** : Streaming MJPEG com overlay das 3 zonas e trajetória.
+3. **`GET http://10.164.64.50/data`** : Telemetria completa (erro composto, erros individuais, curvatura, status da pista, PWM, ângulo).
+4. **`GET http://10.164.64.50/tune?kp=...&kd=...&th=...&speed=...&wfar=...&orient=...&inv_servo=...`** : Calibração dinâmica em tempo de execução.
+5. **`GET http://10.164.64.50/cmd?action=start|stop`** : Habilita ou desabilita a tração dos motores.
 
 ---
 
@@ -122,11 +141,3 @@ A interface web é **100% offline** (armazenada na memória Flash `PROGMEM`), es
 - `ESP32-CAM U0R (RX)` $\rightarrow$ `FTDI TX`
 - `ESP32-CAM U0T (TX)` $\rightarrow$ `FTDI RX`
 - **Conectar GPIO 0 com GND** durante a gravação (modo bootloader).
-
----
-
-## 🔋 Alimentação e Cuidados Elétricos
-
-- **ESP32-CAM:** Requer alimentação dedicada de **5V @ 2A** (recomenda-se conversor Step-Down LM2596/MP1584).
-- **Motores DC & Ponte H:** Devem ser alimentados por bateria/fonte separada.
-- **GND Comum:** É obrigatório interligar todos os terminais GND do sistema.
