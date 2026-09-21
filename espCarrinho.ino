@@ -61,8 +61,8 @@
  */
 
 // --- Credenciais do Hotspot Móvel / Roteador Wi-Fi ---
-const char *WIFI_SSID = "Redmi Note 10S";
-const char *WIFI_PASS = "monobola8";
+const char *WIFI_SSID = "firula";
+const char *WIFI_PASS = "bebop123";
 
 /* =====================================================================================
  * 2. PINAGEM DO HARDWARE (ESP32-CAM AI-THINKER)
