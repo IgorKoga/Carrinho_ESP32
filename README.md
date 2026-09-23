@@ -27,12 +27,13 @@ O sistema opera com separação estrita de tarefas entre os dois núcleos do ESP
  │   (Visão & Controle PD)      │    (Rede Wi-Fi & Servidor)   │
  ├──────────────────────────────┼──────────────────────────────┤
  │ • Captura QQVGA (160x120)    │ • Wi-Fi Station Hotspot      │
- │ • Varredura Multi-Zona (3x)  │ • IP Estático 10.164.64.50   │
- │ • Detecção Preditiva Curvas  │ • Servidor HTTP (Porta 80)   │
- │ • Cálculo Curvatura (ΔE)     │ • Streaming MJPEG (/stream)  │
- │ • Frenagem Antecipada        │ • Telemetria JSON (/data)    │
- │ • Overlay Trajetória Stream  │ • Calibração Dinâmica (/tune)│
- │ • Loop Estrito: ~30 ms       │ • Comandos Tração (/cmd)     │
+ │ • Varredura Multi-Zona (3x)  │ • DHCP Dinâmico / mDNS       │
+ │ • Detecção Preditiva Curvas  │ • Host: carrinho.local       │
+ │ • Cálculo Curvatura (ΔE)     │ • Servidor HTTP (Porta 80)   │
+ │ • Frenagem Antecipada        │ • Streaming MJPEG (/stream)  │
+ │ • Overlay Trajetória Stream  │ • Telemetria JSON (/data)    │
+ │ • Loop Estrito: ~30 ms       │ • Calibração Dinâmica (/tune)│
+ │                              │ • Comandos Tração (/cmd)     │
  └──────────────────────────────┴──────────────────────────────┘
 ```
 
@@ -70,9 +71,9 @@ Ao invés de ler apenas uma faixa restrita, o pipeline processa a tela inteira d
 - **Cálculo da Curvatura ($\Delta E$):**
   $$\Delta E = E_{\text{far}} - E_{\text{base}}$$
 - **Classificação Automática:**
-  - $|\Delta E| < 10$: `RETA` (Aceleração máxima na velocidade base).
-  - $10 \le |\Delta E| < 24$: `CURVA SUAVE` (Correção suave e leve modulação de PWM).
-  - $|\Delta E| \ge 24$: `CURVA FECHADA` (Frenagem preditiva imediata antes de entrar na curva!).
+  - $|\Delta E| < 8$: `RETA` (Aceleração máxima na velocidade base).
+  - $8 \le |\Delta E| < 20$: `CURVA SUAVE` (Correção suave e leve modulação de PWM).
+  - $|\Delta E| \ge 20$: `CURVA FECHADA` (Frenagem preditiva imediata antes de entrar na curva!).
 - **Blend de Esterçamento Composto:**
   $$E_{\text{composto}} = (1 - w_{\text{far}}) \cdot E_{\text{base}} + w_{\text{far}} \cdot E_{\text{far}}$$
 - **Controlador PD Preditivo:**
@@ -109,18 +110,25 @@ Ao invés de ler apenas uma faixa restrita, o pipeline processa a tela inteira d
 
 A interface web é **100% offline** (armazenada na memória Flash `PROGMEM`), estilizada em **Dark Theme** moderno e totalmente responsiva.
 
-- **SSID do Hotspot:** `Redmi Note 10S`
-- **Senha:** `monobola8`
-- **IP Estático Fixo:** `http://10.164.64.50`
-- **Porta do Painel:** `80`
-- **Porta do Streaming:** `81` (`http://10.164.64.50:81/stream`)
+- **SSID do Hotspot:** `firula`
+- **Senha:** `bebop123`
+- **Endereço mDNS:** `http://carrinho.local/` (ou IP local via DHCP, exibido no Monitor Serial)
+- **Porta do Painel:** `80` (`http://carrinho.local/`)
+- **Porta do Streaming:** `81` (`http://carrinho.local:81/stream`)
+- **Configurações Ideais Padrão:**
+  - **Velocidade Base (PWM):** `180` (0 a 255)
+  - **Sensibilidade Proporcional ($K_p$):** `0.70`
+  - **Amortecimento Derivativo ($K_d$):** `0.45`
+  - **Lookahead Antecipação ($W_{\text{far}}$):** `0.35` (35% de peso na zona longe)
+  - **Torque Mínimo ($PWM_{\text{mín}}$):** `120`
+  - **Threshold:** `0` (Automático adaptativo por contraste Min-Max)
 
 ### Rotas e Endpoints HTTP:
-1. **`GET http://10.164.64.50/`** : Painel de controle com vídeo ao vivo, vetor de curva, status multi-zona e calibração.
-2. **`GET http://10.164.64.50:81/stream`** : Streaming MJPEG com overlay das 3 zonas e trajetória.
-3. **`GET http://10.164.64.50/data`** : Telemetria completa (erro composto, erros individuais, curvatura, status da pista, PWM, ângulo).
-4. **`GET http://10.164.64.50/tune?kp=...&kd=...&th=...&speed=...&wfar=...&orient=...&inv_servo=...`** : Calibração dinâmica em tempo de execução.
-5. **`GET http://10.164.64.50/cmd?action=start|stop`** : Habilita ou desabilita a tração dos motores.
+1. **`GET http://carrinho.local/`** : Painel de controle com vídeo ao vivo, vetor de curva, status multi-zona e calibração.
+2. **`GET http://carrinho.local:81/stream`** : Streaming MJPEG com overlay das 3 zonas e trajetória.
+3. **`GET http://carrinho.local/data`** : Telemetria completa (erro composto, erros individuais, curvatura, status da pista, PWM, ângulo, FPS).
+4. **`GET http://carrinho.local/tune?kp=...&kd=...&th=...&speed=...&wfar=...&orient=...&inv_servo=...`** : Calibração dinâmica em tempo de execução.
+5. **`GET http://carrinho.local/cmd?action=start|stop`** : Habilita ou desabilita a tração dos motores.
 
 ---
 

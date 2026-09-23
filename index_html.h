@@ -423,33 +423,33 @@ static const char INDEX_HTML[] PROGMEM = R"rawliteral(
             <div class="slider-item">
               <div class="slider-header">
                 <span>Sensibilidade Proporcional (Kp)</span>
-                <span id="lblKp">0.65</span>
+                <span id="lblKp">0.70</span>
               </div>
-              <input type="range" id="rngKp" min="0.10" max="2.00" step="0.05" value="0.65" oninput="atualizarLabel('lblKp', this.value)">
+              <input type="range" id="rngKp" min="0.10" max="2.00" step="0.05" value="0.70" oninput="atualizarLabel('lblKp', this.value)">
             </div>
 
             <div class="slider-item">
               <div class="slider-header">
                 <span>Amortecimento Derivativo (Kd)</span>
-                <span id="lblKd">0.35</span>
+                <span id="lblKd">0.45</span>
               </div>
-              <input type="range" id="rngKd" min="0.00" max="1.50" step="0.05" value="0.35" oninput="atualizarLabel('lblKd', this.value)">
+              <input type="range" id="rngKd" min="0.00" max="1.50" step="0.05" value="0.45" oninput="atualizarLabel('lblKd', this.value)">
             </div>
 
             <div class="slider-item">
               <div class="slider-header">
                 <span>Velocidade Base Motores (PWM)</span>
-                <span id="lblSpeed">150</span>
+                <span id="lblSpeed">180</span>
               </div>
-              <input type="range" id="rngSpeed" min="60" max="255" step="5" value="150" oninput="atualizarLabel('lblSpeed', this.value)">
+              <input type="range" id="rngSpeed" min="60" max="255" step="5" value="180" oninput="atualizarLabel('lblSpeed', this.value)">
             </div>
 
             <div class="slider-item">
               <div class="slider-header">
                 <span>Peso Antecipação Lookahead (W_far)</span>
-                <span id="lblWfar">0.30</span>
+                <span id="lblWfar">0.35</span>
               </div>
-              <input type="range" id="rngWfar" min="0.00" max="0.60" step="0.05" value="0.30" oninput="atualizarLabel('lblWfar', this.value)">
+              <input type="range" id="rngWfar" min="0.00" max="0.60" step="0.05" value="0.35" oninput="atualizarLabel('lblWfar', this.value)">
             </div>
 
             <div class="slider-item">

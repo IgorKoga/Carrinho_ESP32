@@ -199,13 +199,13 @@ struct ConfigControle {
 };
 
 ConfigControle g_config = {
-    .kp = 0.65f,
-    .kd = 0.35f,
+    .kp = 0.70f,
+    .kd = 0.45f,
     .threshold = 0, // 0 = Auto-Threshold Inteligente por Contraste Min-Max
                     // (Padrão), >0 = Fixo manual
-    .velocidadeBase = 150,
-    .pwmMinimo = 90,
-    .pesoAntecipacao = 0.30f, // 30% de peso no lookahead de curva
+    .velocidadeBase = 180,
+    .pwmMinimo = 120,
+    .pesoAntecipacao = 0.35f, // 35% de peso no lookahead de curva
     .modoOrientacao = ORIENT_NORMAL_LANDSCAPE, // Padrão: Sensor Normal 160x120
     .inverterServo = false,
     .tracaoHabilitada = true};
