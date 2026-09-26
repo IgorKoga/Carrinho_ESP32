@@ -35,7 +35,7 @@
  *
  *  3. HARDWARE & SEGURANÇA ELÉTRICA:
  *     - Servo de Direção: GPIO 02 via LEDC (50 Hz, 14 bits).
- *     - Ponte H Traseira: IN1=GPIO 14, IN2=GPIO 15, IN3=GPIO 13, IN4=GPIO 12.
+ *     - Ponte H / Motores DC (Tração Traseira): IN1=GPIO 14, IN2=GPIO 15, IN3=GPIO 13, IN4=GPIO 12.
  *     - Proteção de Boot: GPIO 12 e demais pinos inicializados em LOW
  * imediatamente.
  * =====================================================================================
